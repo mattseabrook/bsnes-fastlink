@@ -18,7 +18,8 @@
 - (void)setPreferenceName:(NSString *)preferenceName
 {
     _preferenceName = preferenceName;
-    [self observeStandardDefaultsKey:_preferenceName selector:@selector(updateValue)];}
+    [self observeStandardDefaultsKey:_preferenceName selector:@selector(updateValue)];
+}
 
 - (void)viewDidMoveToWindow
 {
