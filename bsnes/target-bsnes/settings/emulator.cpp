@@ -23,6 +23,9 @@ auto EmulatorSettings::create() -> void {
   nativeFileDialogs.setText("Use native file dialogs").setChecked(settings.general.nativeFileDialogs).onToggle([&] {
     settings.general.nativeFileDialogs = nativeFileDialogs.checked();
   });
+  #if defined(PLATFORM_WINDOWS)
+  nativeFileDialogs.setChecked(true).setEnabled(false).setToolTip("Windows builds always use the native Win32 file dialogs.");
+  #endif
   screenSaver.setText("Allow screensaver during emulation").setChecked(settings.general.screenSaver).onToggle([&] {
     settings.general.screenSaver = screenSaver.checked();
     // setting can be toggled while emulation is active

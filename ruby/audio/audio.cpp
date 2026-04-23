@@ -110,6 +110,7 @@ auto Audio::setLatency(uint latency) -> bool {
 //
 
 auto Audio::clear() -> void {
+  _smoothedMultiplier = 1.0;
   for(auto& resampler : resamplers) resampler.reset(instance->frequency);
   return instance->clear();
 }
@@ -119,11 +120,43 @@ auto Audio::level() -> double {
 }
 
 auto Audio::output(const double samples[]) -> void {
-  if(!instance->dynamic) return instance->output(samples);
+  bool useWorker = _workerRunning && !instance->blocking;
 
-  auto maxDelta = 0.005;
+  if(!instance->dynamic) {
+    //fastlink: push to ring buffer for worker thread
+    if(useWorker) {
+      uint channels = instance->channels;
+      uint write = _ringWrite.load(::std::memory_order_relaxed);
+      uint next = (write + 1) % _ringCapacity;
+      if(next != _ringRead.load(::std::memory_order_acquire)) {
+        for(uint n = 0; n < channels && n < 2; n++) {
+          _ringBuffer[write * 2 + n] = samples[n];
+        }
+        _ringWrite.store(next, ::std::memory_order_release);
+        _workerCV.notify_one();
+      }
+      //if ring full, drop sample (non-blocking)
+      return;
+    }
+    return instance->output(samples);
+  }
+
+  //fastlink: EMA-bounded dynamic rate control
+  //alpha controls how fast the multiplier converges (lower = smoother)
+  //maxStep caps the per-sample change to prevent audible pitch shifts
+  constexpr double alpha = 0.16;
+  constexpr double maxStep = 0.0035;
+
   double fillLevel = instance->level();
-  double dynamicFrequency = ((1.0 - maxDelta) + 2.0 * fillLevel * maxDelta) * instance->frequency;
+  double targetMultiplier = (1.0 - 0.005) + 2.0 * fillLevel * 0.005;
+
+  //smooth the multiplier with EMA + clamped step
+  double delta = alpha * (targetMultiplier - _smoothedMultiplier);
+  if(delta > maxStep) delta = maxStep;
+  if(delta < -maxStep) delta = -maxStep;
+  _smoothedMultiplier += delta;
+
+  double dynamicFrequency = _smoothedMultiplier * instance->frequency;
   for(auto& resampler : resamplers) {
     resampler.setInputFrequency(dynamicFrequency);
     resampler.write(*samples++);
@@ -132,13 +165,71 @@ auto Audio::output(const double samples[]) -> void {
   while(resamplers.first().pending()) {
     double samples[instance->channels];
     for(uint n : range(instance->channels)) samples[n] = resamplers[n].read();
-    instance->output(samples);
+    //fastlink: push resampled output to ring buffer for worker thread
+    if(useWorker) {
+      uint write = _ringWrite.load(::std::memory_order_relaxed);
+      uint next = (write + 1) % _ringCapacity;
+      if(next != _ringRead.load(::std::memory_order_acquire)) {
+        for(uint n = 0; n < instance->channels && n < 2; n++) {
+          _ringBuffer[write * 2 + n] = samples[n];
+        }
+        _ringWrite.store(next, ::std::memory_order_release);
+        _workerCV.notify_one();
+      }
+    } else {
+      instance->output(samples);
+    }
+  }
+}
+
+auto Audio::startWorker() -> void {
+  if(_workerRunning) return;
+  _ringRead = 0;
+  _ringWrite = 0;
+  _workerRunning = true;
+  _workerThread = ::std::thread([this] { _workerMain(); });
+}
+
+auto Audio::stopWorker() -> void {
+  if(!_workerRunning) return;
+  _workerRunning = false;
+  _workerCV.notify_one();
+  if(_workerThread.joinable()) _workerThread.join();
+}
+
+auto Audio::_workerMain() -> void {
+  while(_workerRunning) {
+    uint read = _ringRead.load(::std::memory_order_relaxed);
+    uint write = _ringWrite.load(::std::memory_order_acquire);
+
+    if(read == write) {
+      //ring empty, wait for signal
+      ::std::unique_lock<::std::mutex> lock(_workerMutex);
+      _workerCV.wait_for(lock, ::std::chrono::milliseconds(1), [&] {
+        return _ringRead.load(::std::memory_order_relaxed) != _ringWrite.load(::std::memory_order_acquire)
+            || !_workerRunning;
+      });
+      continue;
+    }
+
+    //drain available samples
+    while(read != _ringWrite.load(::std::memory_order_acquire) && _workerRunning) {
+      double samples[2];
+      samples[0] = _ringBuffer[read * 2 + 0];
+      samples[1] = _ringBuffer[read * 2 + 1];
+      uint next = (read + 1) % _ringCapacity;
+      _ringRead.store(next, ::std::memory_order_release);
+      read = next;
+
+      instance->output(samples);
+    }
   }
 }
 
 //
 
 auto Audio::create(string driver) -> bool {
+  self.stopWorker();
   self.instance.reset();
   if(!driver) driver = optimalDriver();
 
@@ -188,7 +279,9 @@ auto Audio::create(string driver) -> bool {
 
   if(!self.instance) self.instance = new AudioDriver(*this);
 
-  return self.instance->create();
+  bool result = self.instance->create();
+  if(result) self.startWorker();
+  return result;
 }
 
 auto Audio::hasDrivers() -> vector<string> {

@@ -27,7 +27,9 @@ auto Program::create() -> void {
   settingsWindow.create();
   videoSettings.create();
   audioSettings.create();
+  #if !defined(PLATFORM_WINDOWS)
   inputSettings.create();
+  #endif
   hotkeySettings.create();
   pathSettings.create();
   emulatorSettings.create();
@@ -45,31 +47,59 @@ auto Program::create() -> void {
   manifestViewer.create();
 
   if(settings.general.crashed) {
+    string crashComponent = settings.general.crashComponent;
+    if(!crashComponent) crashComponent = "Video";
+
     MessageDialog(
-      "Driver crash detected. Hardware drivers have been disabled.\n"
-      "Please reconfigure drivers in the advanced settings panel."
+      "Driver crash detected. Recovery settings have been applied.\n"
+      "Please reconfigure drivers in the advanced settings panel if needed."
     ).setAlignment(*presentation).information();
-    settings.video.driver = "None";
-    settings.audio.driver = "None";
-    settings.input.driver = "None";
+
+    if(crashComponent == "Video") {
+      settings.video.driver = "None";
+      if(settings.audio.driver == "None") settings.audio.driver = ruby::Audio::optimalDriver();
+      #if defined(PLATFORM_WINDOWS)
+      if(settings.input.driver == "None") settings.input.driver = NativeInputDriverName;
+      #else
+      if(settings.input.driver == "None") settings.input.driver = ruby::Input::safestDriver();
+      #endif
+    }
+    if(crashComponent == "Audio") {
+      settings.audio.driver = ruby::Audio::optimalDriver();
+    }
+    if(crashComponent == "Input") {
+      #if defined(PLATFORM_WINDOWS)
+      settings.input.driver = NativeInputDriverName;
+      #else
+      settings.input.driver = ruby::Input::safestDriver();
+      #endif
+    }
   }
 
   settings.general.crashed = true;
+  settings.general.crashComponent = "Video";
   settings.save();
   updateVideoDriver(presentation);
-  updateAudioDriver(presentation);
-  updateInputDriver(presentation);
-  settings.general.crashed = false;
-  settings.save();
 
-  driverSettings.videoDriverChanged();
-  driverSettings.audioDriverChanged();
-  driverSettings.inputDriverChanged();
+  settings.general.crashComponent = "Audio";
+  settings.save();
+  updateAudioDriver(presentation);
+
+  settings.general.crashComponent = "Input";
+  settings.save();
+  updateInputDriver(presentation);
+
+  settings.general.crashed = false;
+  settings.general.crashComponent = "";
+  settings.save();
 
   if(gameQueue) load();
   if(startFullScreen && emulator->loaded()) {
     toggleVideoFullScreen();
   }
+  #if !defined(PLATFORM_WINDOWS)
+  inputManager.startWorker();
+  #endif
   Application::onMain({&Program::main, this});
 }
 
@@ -82,7 +112,9 @@ auto Program::main() -> void {
     return;
   }
 
+  #if !defined(PLATFORM_WINDOWS)
   inputManager.poll();
+  #endif
   inputManager.pollHotkeys();
 
   static bool previouslyInactive = true;
@@ -97,26 +129,13 @@ auto Program::main() -> void {
   if(currentlyInactive) {
     audio.clear();
     usleep(20 * 1000);
-    if(settings.emulator.runAhead.frames == 0) viewportRefresh();
+    viewportRefresh();
     return;
   }
 
   rewindRun();
 
-  if(!settings.emulator.runAhead.frames || fastForwarding || rewinding) {
-    emulator->run();
-  } else {
-    emulator->setRunAhead(true);
-    emulator->run();
-    auto state = emulator->serialize(0);
-    if(settings.emulator.runAhead.frames >= 2) emulator->run();
-    if(settings.emulator.runAhead.frames >= 3) emulator->run();
-    if(settings.emulator.runAhead.frames >= 4) emulator->run();
-    emulator->setRunAhead(false);
-    emulator->run();
-    state.setMode(serializer::Mode::Load);
-    emulator->unserialize(state);
-  }
+  emulator->run();
 
   if(emulatorSettings.autoSaveMemory.checked()) {
     auto currentTime = chrono::timestamp();
@@ -128,14 +147,22 @@ auto Program::main() -> void {
 }
 
 auto Program::quit() -> void {
+  presentation.saveWindowGeometry();
+
   //make closing the program feel more responsive
   presentation.setVisible(false);
   Application::processEvents();
 
   //in case the emulator was closed prior to initialization completing:
   settings.general.crashed = false;
+  settings.general.crashComponent = "";
 
   unload();
+  #if defined(PLATFORM_WINDOWS)
+  nativeInputManager.terminate();
+  #else
+  inputManager.stopWorker();
+  #endif
   settings.save();
   video.reset();
   audio.reset();

@@ -39,10 +39,11 @@ auto nall::main(Arguments arguments) -> void {
   }
 
   settings.load();
-  Application::setName("bsnes");
+  Application::setName("bsnes-fastlink");
   Application::setToolTips(settings.general.toolTips);
 
   Instances::presentation.construct();
+  presentation.setBackgroundColor({0, 0, 0});
   Instances::settingsWindow.construct();
   Instances::cheatDatabase.construct();
   Instances::cheatWindow.construct();

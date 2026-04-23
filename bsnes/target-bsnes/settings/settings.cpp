@@ -21,6 +21,25 @@ DriverSettings driverSettings;
 namespace Instances { Instance<SettingsWindow> settingsWindow; }
 SettingsWindow& settingsWindow = Instances::settingsWindow();
 
+namespace {
+  #if defined(PLATFORM_WINDOWS)
+  constexpr auto HotkeySettingsIndex = 2;
+  constexpr auto PathSettingsIndex = 3;
+  constexpr auto EmulatorSettingsIndex = 4;
+  constexpr auto EnhancementSettingsIndex = 5;
+  constexpr auto CompatibilitySettingsIndex = 6;
+  constexpr auto DriverSettingsIndex = 7;
+  #else
+  constexpr auto InputSettingsIndex = 2;
+  constexpr auto HotkeySettingsIndex = 3;
+  constexpr auto PathSettingsIndex = 4;
+  constexpr auto EmulatorSettingsIndex = 5;
+  constexpr auto EnhancementSettingsIndex = 6;
+  constexpr auto CompatibilitySettingsIndex = 7;
+  constexpr auto DriverSettingsIndex = 8;
+  #endif
+}
+
 auto Settings::load() -> void {
   Markup::Node::operator=(BML::unserialize(string::read(location), " "));
   process(true);
@@ -35,9 +54,13 @@ auto Settings::save() -> void {
 auto Settings::process(bool load) -> void {
   if(load) {
     //initialize non-static default settings
-    video.driver = ruby::Video::safestDriver();
-    audio.driver = ruby::Audio::safestDriver();
+    video.driver = ruby::Video::optimalDriver();
+    audio.driver = ruby::Audio::optimalDriver();
+    #if defined(PLATFORM_WINDOWS)
+    input.driver = NativeInputDriverName;
+    #else
     input.driver = ruby::Input::safestDriver();
+    #endif
   }
 
   #define bind(type, path, name) \
@@ -115,7 +138,6 @@ auto Settings::process(bool load) -> void {
   bind(boolean, "Emulator/AutoSaveStateOnUnload",        emulator.autoSaveStateOnUnload);
   bind(boolean, "Emulator/AutoLoadStateOnLoad",          emulator.autoLoadStateOnLoad);
   bind(text,    "Emulator/Serialization/Method",         emulator.serialization.method);
-  bind(natural, "Emulator/RunAhead/Frames",              emulator.runAhead.frames);
   bind(boolean, "Emulator/Hack/Hotfixes",                emulator.hack.hotfixes);
   bind(text,    "Emulator/Hack/Entropy",                 emulator.hack.entropy);
   bind(natural, "Emulator/Hack/CPU/Overclock",           emulator.hack.cpu.overclock);
@@ -141,7 +163,40 @@ auto Settings::process(bool load) -> void {
   bind(boolean, "General/ScreenSaver",       general.screenSaver);
   bind(boolean, "General/ToolTips",          general.toolTips);
   bind(boolean, "General/Crashed",           general.crashed);
+  bind(text,    "General/CrashComponent",    general.crashComponent);
   bind(boolean, "General/NativeFileDialogs", general.nativeFileDialogs);
+  bind(integer, "General/Window/X",          general.window.x);
+  bind(integer, "General/Window/Y",          general.window.y);
+  bind(natural, "General/Window/Width",      general.window.width);
+  bind(natural, "General/Window/Height",     general.window.height);
+  bind(text,    "General/Window/Monitor",    general.window.monitor);
+
+  if(load) {
+    if(!ruby::Video::hasDriver(video.driver)) {
+      video.driver = ruby::Video::optimalDriver();
+    }
+    if(video.driver == "Direct3D 9.0" || video.driver == "DirectDraw 7.0" || video.driver == "GDI") {
+      video.driver = ruby::Video::optimalDriver();
+    }
+    if(!ruby::Audio::hasDriver(audio.driver)) {
+      audio.driver = ruby::Audio::optimalDriver();
+    }
+    if(audio.driver == "waveOut" || audio.driver == "DirectSound 7.0") {
+      audio.driver = ruby::Audio::optimalDriver();
+    }
+
+    #if defined(PLATFORM_WINDOWS)
+    //Older crash recovery builds disabled every driver after a video failure.
+    //Recover audio/input automatically when that exact all-None state is encountered.
+    if(video.driver == "None" && audio.driver == "None" && input.driver == "None" && !general.crashComponent) {
+      audio.driver = ruby::Audio::optimalDriver();
+      input.driver = NativeInputDriverName;
+      general.crashComponent = "Video";
+    }
+    if(!input.driver || input.driver == "None") input.driver = NativeInputDriverName;
+    general.nativeFileDialogs = true;
+    #endif
+  }
 
   #undef bind
 }
@@ -175,7 +230,9 @@ auto SettingsWindow::create() -> void {
   layout.setPadding(5_sx);
   panelList.append(ListViewItem().setText("Video").setIcon(Icon::Device::Display));
   panelList.append(ListViewItem().setText("Audio").setIcon(Icon::Device::Speaker));
+  #if !defined(PLATFORM_WINDOWS)
   panelList.append(ListViewItem().setText("Input").setIcon(Icon::Device::Joypad));
+  #endif
   panelList.append(ListViewItem().setText("Hotkeys").setIcon(Icon::Device::Keyboard));
   panelList.append(ListViewItem().setText("Paths").setIcon(Icon::Emblem::Folder));
   panelList.append(ListViewItem().setText("Emulator").setIcon(Icon::Action::Settings));
@@ -192,7 +249,9 @@ auto SettingsWindow::create() -> void {
   panelContainer.append(settingsHome, Size{~0, ~0});
   panelContainer.append(videoSettings, Size{~0, ~0});
   panelContainer.append(audioSettings, Size{~0, ~0});
+  #if !defined(PLATFORM_WINDOWS)
   panelContainer.append(inputSettings, Size{~0, ~0});
+  #endif
   panelContainer.append(hotkeySettings, Size{~0, ~0});
   panelContainer.append(pathSettings, Size{~0, ~0});
   panelContainer.append(emulatorSettings, Size{~0, ~0});
@@ -215,7 +274,9 @@ auto SettingsWindow::create() -> void {
 
 auto SettingsWindow::setVisible(bool visible) -> SettingsWindow& {
   if(visible) {
+    #if !defined(PLATFORM_WINDOWS)
     inputSettings.refreshMappings();
+    #endif
     hotkeySettings.refreshMappings();
     Application::processEvents();
   }
@@ -223,10 +284,18 @@ auto SettingsWindow::setVisible(bool visible) -> SettingsWindow& {
 }
 
 auto SettingsWindow::show(int index) -> void {
+  if(index == DriverSettingsIndex) {
+    driverSettings.videoDriverChanged();
+    driverSettings.audioDriverChanged();
+    driverSettings.inputDriverChanged();
+  }
+
   settingsHome.setVisible(false);
   videoSettings.setVisible(false);
   audioSettings.setVisible(false);
+  #if !defined(PLATFORM_WINDOWS)
   inputSettings.setVisible(false);
+  #endif
   hotkeySettings.setVisible(false);
   pathSettings.setVisible(false);
   emulatorSettings.setVisible(false);
@@ -237,13 +306,15 @@ auto SettingsWindow::show(int index) -> void {
   if(index ==-1) settingsHome.setVisible(true);
   if(index == 0) videoSettings.setVisible(true);
   if(index == 1) audioSettings.setVisible(true);
-  if(index == 2) inputSettings.setVisible(true);
-  if(index == 3) hotkeySettings.setVisible(true);
-  if(index == 4) pathSettings.setVisible(true);
-  if(index == 5) emulatorSettings.setVisible(true);
-  if(index == 6) enhancementSettings.setVisible(true);
-  if(index == 7) compatibilitySettings.setVisible(true);
-  if(index == 8) driverSettings.setVisible(true);
+  #if !defined(PLATFORM_WINDOWS)
+  if(index == InputSettingsIndex) inputSettings.setVisible(true);
+  #endif
+  if(index == HotkeySettingsIndex) hotkeySettings.setVisible(true);
+  if(index == PathSettingsIndex) pathSettings.setVisible(true);
+  if(index == EmulatorSettingsIndex) emulatorSettings.setVisible(true);
+  if(index == EnhancementSettingsIndex) enhancementSettings.setVisible(true);
+  if(index == CompatibilitySettingsIndex) compatibilitySettings.setVisible(true);
+  if(index == DriverSettingsIndex) driverSettings.setVisible(true);
   panelContainer.resize();
   setVisible();
   setFocused();

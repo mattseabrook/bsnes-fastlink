@@ -205,6 +205,13 @@ auto InputManager::initialize() -> void {
   devices.reset();
   ports.reset();
   hotkeys.reset();
+  _pendingDevices.reset();
+  _devicesChanged = false;
+  {
+    ::std::lock_guard<::std::mutex> lock(_changeMutex);
+    _pendingChanges.clear();
+  }
+  _mainThreadID = ::std::this_thread::get_id();
 
   input.onChange({&InputManager::onChange, this});
 
@@ -279,7 +286,23 @@ auto InputManager::bind() -> void {
 auto InputManager::poll() -> void {
   if(Application::modal()) return;
 
-  //polling actual hardware devices is time-consuming; skip if poll was called too recently
+  //fastlink: when worker is running, devices are updated continuously
+  //just check if device list changed and rebind if needed
+  if(_pollRunning) {
+    bool changed = false;
+    {
+      ::std::lock_guard<::std::mutex> lock(_deviceMutex);
+      if(_devicesChanged.exchange(false)) {
+        devices = _pendingDevices;
+        changed = true;
+      }
+    }
+    if(changed) bind();
+    flushWorkerEvents();
+    return;
+  }
+
+  //fallback: poll directly (worker not started yet)
   auto thisPoll = chrono::millisecond();
   if(thisPoll - lastPoll < frequency) return;
   lastPoll = thisPoll;
@@ -303,9 +326,28 @@ auto InputManager::frame() -> void {
 }
 
 auto InputManager::onChange(shared_pointer<HID::Device> device, uint group, uint input, int16_t oldValue, int16_t newValue) -> void {
-  if(settingsWindow.focused()) {
-    inputSettings.inputEvent(device, group, input, oldValue, newValue);
-    hotkeySettings.inputEvent(device, group, input, oldValue, newValue);
+  if(!settingsWindow.focused()) return;
+
+  if(_pollRunning && ::std::this_thread::get_id() != _mainThreadID) {
+    ::std::lock_guard<::std::mutex> lock(_changeMutex);
+    _pendingChanges.push_back({device, group, input, oldValue, newValue});
+    return;
+  }
+
+  inputSettings.inputEvent(device, group, input, oldValue, newValue);
+  hotkeySettings.inputEvent(device, group, input, oldValue, newValue);
+}
+
+auto InputManager::flushWorkerEvents() -> void {
+  ::std::vector<ChangeEvent> pendingChanges;
+  {
+    ::std::lock_guard<::std::mutex> lock(_changeMutex);
+    if(_pendingChanges.empty()) return;
+    pendingChanges.swap(_pendingChanges);
+  }
+
+  for(auto& event : pendingChanges) {
+    onChange(event.device, event.group, event.input, event.oldValue, event.newValue);
   }
 }
 
@@ -328,3 +370,40 @@ auto InputManager::findMouse() -> shared_pointer<HID::Device> {
   }
   return {};
 }
+
+auto InputManager::startWorker() -> void {
+  if(_pollRunning) return;
+  _pollRunning = true;
+  _pollThread = ::std::thread([this] {
+    auto knownDevices = this->devices;
+    while(_pollRunning) {
+      if(!Application::modal()) {
+        auto polledDevices = input.poll();
+        bool changed = polledDevices.size() != knownDevices.size();
+        if(!changed) {
+          for(auto n : range(polledDevices.size())) {
+            changed = polledDevices[n] != knownDevices[n];
+            if(changed) break;
+          }
+        }
+        if(changed) {
+          ::std::lock_guard<::std::mutex> lock(_deviceMutex);
+          _pendingDevices = polledDevices;
+          _devicesChanged = true;
+          knownDevices = polledDevices;
+        }
+      }
+      //poll at ~1000Hz for minimal input latency
+      ::std::this_thread::sleep_for(::std::chrono::milliseconds(1));
+    }
+  });
+}
+
+auto InputManager::stopWorker() -> void {
+  if(!_pollRunning) return;
+  _pollRunning = false;
+  if(_pollThread.joinable()) _pollThread.join();
+  flushWorkerEvents();
+}
+
+#include "native-win32.cpp"

@@ -1,18 +1,56 @@
+#if defined(PLATFORM_WINDOWS)
+#include <windows.h>
+#include <cstdarg>
+#include <cstdio>
+namespace {
+auto ProgramVideoTrace(const char* format, ...) -> void {
+  char buffer[2048];
+  int offset = snprintf(buffer, sizeof(buffer), "[bsnes-fastlink][video] ");
+  if(offset < 0) offset = 0;
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer + offset, sizeof(buffer) - offset, format, args);
+  va_end(args);
+  OutputDebugStringA(buffer);
+}
+}
+#else
+namespace {
+auto ProgramVideoTrace(const char* format, ...) -> void {
+}
+}
+#endif
+
 auto Program::updateVideoDriver(Window parent) -> void {
   auto changed = (bool)video;
-  video.create(settings.video.driver);
+  ProgramVideoTrace("updateVideoDriver: requested=%s active=%s changed=%d viewport=%p\n", (const char*)settings.video.driver, (const char*)video.driver(), changed, (void*)presentation.viewport.handle());
+
   video.setContext(presentation.viewport.handle());
+  ProgramVideoTrace("updateVideoDriver: context cached, driver=%s ready=%d\n", (const char*)video.driver(), video.ready());
+
+  video.create(settings.video.driver);
+  ProgramVideoTrace("updateVideoDriver: after create active=%s ready=%d format=%s\n", (const char*)video.driver(), video.ready(), (const char*)video.format());
+
   if(changed) {
     settings.video.format = video.format();
+    ProgramVideoTrace("updateVideoDriver: preserved format=%s from previous driver change\n", (const char*)settings.video.format);
   }
+
+  ProgramVideoTrace("updateVideoDriver: update exclusive\n");
   updateVideoExclusive();
+  ProgramVideoTrace("updateVideoDriver: update blocking\n");
   updateVideoBlocking();
+  ProgramVideoTrace("updateVideoDriver: update flush\n");
   updateVideoFlush();
+  ProgramVideoTrace("updateVideoDriver: update monitor\n");
   updateVideoMonitor();
+  ProgramVideoTrace("updateVideoDriver: update format\n");
   updateVideoFormat();
+  ProgramVideoTrace("updateVideoDriver: update shader\n");
   updateVideoShader();
 
   if(video.ready()) {
+    ProgramVideoTrace("updateVideoDriver: clearing video surface\n");
     video.clear();
     updateVideoShader();
   }
@@ -22,6 +60,7 @@ auto Program::updateVideoDriver(Window parent) -> void {
   });
 
   if(!video.ready()) {
+    ProgramVideoTrace("updateVideoDriver: FAILED requested=%s active=%s -> falling back to None\n", (const char*)settings.video.driver, (const char*)video.driver());
     MessageDialog({
       "Error: failed to initialize [", settings.video.driver, "] video driver."
     }).setAlignment(parent).error();
@@ -29,6 +68,7 @@ auto Program::updateVideoDriver(Window parent) -> void {
     return updateVideoDriver(parent);
   }
 
+  ProgramVideoTrace("updateVideoDriver: success active=%s ready=%d\n", (const char*)video.driver(), video.ready());
   presentation.updateShaders();
 }
 

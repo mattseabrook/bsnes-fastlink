@@ -18,6 +18,11 @@
 #include <nall/dsp/resampler/cubic.hpp>
 #include <nall/hash/crc32.hpp>
 
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+
 using nall::function;
 using nall::queue;
 using nall::shared_pointer;

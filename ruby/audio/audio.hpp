@@ -59,7 +59,7 @@ struct Audio {
 
   Audio() : self(*this) { reset(); }
   explicit operator bool() { return instance->driver() != "None"; }
-  auto reset() -> void { instance = new AudioDriver(*this); }
+  auto reset() -> void { stopWorker(); instance = new AudioDriver(*this); }
   auto create(string driver = "") -> bool;
   auto driver() -> string { return instance->driver(); }
   auto ready() -> bool { return instance->ready(); }
@@ -100,8 +100,26 @@ struct Audio {
   auto level() -> double;
   auto output(const double samples[]) -> void;
 
+  auto startWorker() -> void;
+  auto stopWorker() -> void;
+
 protected:
   Audio& self;
   unique_pointer<AudioDriver> instance;
   vector<nall::DSP::Resampler::Cubic> resamplers;
+
+  //DRC EMA smoothing state (fastlink)
+  double _smoothedMultiplier = 1.0;
+
+  //audio worker thread (fastlink)
+  static constexpr uint _ringCapacity = 8192;  //samples (per-channel pairs)
+  double _ringBuffer[_ringCapacity * 2] = {};   //interleaved stereo
+  ::std::atomic<uint> _ringRead{0};
+  ::std::atomic<uint> _ringWrite{0};
+  ::std::thread _workerThread;
+  ::std::mutex _workerMutex;
+  ::std::condition_variable _workerCV;
+  ::std::atomic<bool> _workerRunning{false};
+
+  auto _workerMain() -> void;
 };

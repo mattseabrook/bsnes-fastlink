@@ -45,7 +45,7 @@ protected:
   bool exclusive = false;
   uintptr context = 0;
   bool blocking = false;
-  bool flush = false;
+  bool flush = true;  //fastlink: default to GPU pipeline drain for lowest latency
   string format = "ARGB24";
   string shader = "Blur";
 };
@@ -75,7 +75,7 @@ struct Video {
 
   Video() : self(*this) { reset(); }
   explicit operator bool() { return instance->driver() != "None"; }
-  auto reset() -> void { instance = new VideoDriver(*this); }
+  auto reset() -> void { stopRenderWorker(); instance = new VideoDriver(*this); }
   auto create(string driver = "") -> bool;
   auto driver() -> string { return instance->driver(); }
   auto ready() -> bool { return instance->ready(); }
@@ -129,8 +129,24 @@ struct Video {
   auto onUpdate(const function<void (uint, uint)>&) -> void;
   auto doUpdate(uint width, uint height) -> void;
 
+  //fastlink: async render thread
+  auto startRenderWorker() -> void;
+  auto stopRenderWorker() -> void;
+
 protected:
   Video& self;
   unique_pointer<VideoDriver> instance;
   function<void (uint, uint)> update;
+
+  //fastlink: render worker state
+  struct PendingFrame {
+    uint width = 0;
+    uint height = 0;
+    bool ready = false;
+  };
+  ::std::thread _renderThread;
+  ::std::mutex _renderMutex;
+  ::std::condition_variable _renderCV;
+  ::std::atomic<bool> _renderRunning{false};
+  PendingFrame _pendingFrame;
 };

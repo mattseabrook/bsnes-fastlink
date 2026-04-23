@@ -51,7 +51,7 @@ auto Program::load() -> void {
     appliedPatch() ? " and patch applied" : ""
   });
   presentation.setFocused();
-  presentation.setTitle(emulator->title());
+  presentation.setTitle({emulator->title(), " - ", Emulator::Name});
   presentation.resetSystem.setEnabled(true);
   presentation.unloadGame.setEnabled(true);
   presentation.toolsMenu.setVisible(true);
@@ -339,7 +339,7 @@ auto Program::unload() -> void {
   bsMemory = {};
   sufamiTurboA = {};
   sufamiTurboB = {};
-  presentation.setTitle({"bsnes v", Emulator::Version});
+  presentation.setTitle({Emulator::Name, " v", Emulator::Version});
   presentation.resetSystem.setEnabled(false);
   presentation.unloadGame.setEnabled(false);
   presentation.toolsMenu.setVisible(false);

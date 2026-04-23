@@ -1,6 +1,10 @@
 #pragma once
 
 //ruby-specific header to provide mingw-friendly xaudio2 interfaces
+//Ensure 'interface' is defined for COM macros
+#ifndef interface
+#define interface struct
+#endif
 
 //64-bit GCC fix
 #define GUID_EXT EXTERN_C

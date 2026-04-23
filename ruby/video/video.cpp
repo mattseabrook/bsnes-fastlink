@@ -30,6 +30,10 @@
   #include <ruby/video/xshm.cpp>
 #endif
 
+#if defined(VIDEO_VULKAN)
+  #include <ruby/video/vulkan.cpp>
+#endif
+
 #if defined(VIDEO_XVIDEO)
   #include <ruby/video/xvideo.cpp>
 #endif
@@ -59,7 +63,8 @@ auto Video::setExclusive(bool exclusive) -> bool {
 
 auto Video::setContext(uintptr context) -> bool {
   if(instance->context == context) return true;
-  if(!instance->hasContext()) return false;
+  instance->context = context;
+  if(!instance->hasContext()) return true;
   if(!instance->setContext(instance->context = context)) return false;
   return true;
 }
@@ -119,6 +124,17 @@ auto Video::release() -> void {
 }
 
 auto Video::output(uint width, uint height) -> void {
+  //On Windows, present directly from the emulation thread to avoid an extra frame queue.
+  if(_renderRunning) {
+    {
+      ::std::lock_guard<::std::mutex> lock(_renderMutex);
+      _pendingFrame.width = width;
+      _pendingFrame.height = height;
+      _pendingFrame.ready = true;
+    }
+    _renderCV.notify_one();
+    return;
+  }
   return instance->output(width, height);
 }
 
@@ -138,9 +154,53 @@ auto Video::doUpdate(uint width, uint height) -> void {
 
 //
 
+auto Video::startRenderWorker() -> void {
+  if(_renderRunning) return;
+  _pendingFrame.ready = false;
+  _renderRunning = true;
+  _renderThread = ::std::thread([this] {
+    while(_renderRunning) {
+      PendingFrame frame;
+      {
+        ::std::unique_lock<::std::mutex> lock(_renderMutex);
+        _renderCV.wait(lock, [&] {
+          return _pendingFrame.ready || !_renderRunning;
+        });
+        if(!_renderRunning) break;
+        frame = _pendingFrame;
+        _pendingFrame.ready = false;
+      }
+      instance->output(frame.width, frame.height);
+    }
+  });
+}
+
+auto Video::stopRenderWorker() -> void {
+  if(!_renderRunning) return;
+  _renderRunning = false;
+  _renderCV.notify_one();
+  if(_renderThread.joinable()) _renderThread.join();
+}
+
+//
+
 auto Video::create(string driver) -> bool {
+  auto fullScreen = self.instance->fullScreen;
+  auto monitor = self.instance->monitor;
+  auto exclusive = self.instance->exclusive;
+  auto context = self.instance->context;
+  auto blocking = self.instance->blocking;
+  auto flush = self.instance->flush;
+  auto format = self.instance->format;
+  auto shader = self.instance->shader;
+
+  self.stopRenderWorker();
   self.instance.reset();
   if(!driver) driver = optimalDriver();
+
+  #if defined(VIDEO_VULKAN)
+  if(driver == "Vulkan") self.instance = new VideoVulkan(*this);
+  #endif
 
   #if defined(VIDEO_CGL)
   if(driver == "OpenGL 3.2") self.instance = new VideoCGL(*this);
@@ -180,11 +240,28 @@ auto Video::create(string driver) -> bool {
 
   if(!self.instance) self.instance = new VideoDriver(*this);
 
-  return self.instance->create();
+  self.instance->fullScreen = fullScreen;
+  self.instance->monitor = monitor;
+  self.instance->exclusive = exclusive;
+  self.instance->context = context;
+  self.instance->blocking = blocking;
+  self.instance->flush = flush;
+  self.instance->format = format;
+  self.instance->shader = shader;
+
+  bool result = self.instance->create();
+  #if !defined(DISPLAY_WINDOWS)
+  if(result) self.startRenderWorker();
+  #endif
+  return result;
 }
 
 auto Video::hasDrivers() -> vector<string> {
   return {
+
+  #if defined(VIDEO_VULKAN)
+  "Vulkan",
+  #endif
 
   #if defined(VIDEO_WGL)
   "OpenGL 3.2",
@@ -226,7 +303,9 @@ auto Video::hasDrivers() -> vector<string> {
 }
 
 auto Video::optimalDriver() -> string {
-  #if defined(VIDEO_WGL)
+  #if defined(VIDEO_VULKAN)
+  return "Vulkan";
+  #elif defined(VIDEO_WGL)
   return "OpenGL 3.2";
   #elif defined(VIDEO_DIRECT3D)
   return "Direct3D 9.0";
@@ -250,7 +329,9 @@ auto Video::optimalDriver() -> string {
 }
 
 auto Video::safestDriver() -> string {
-  #if defined(VIDEO_DIRECT3D)
+  #if defined(VIDEO_VULKAN)
+  return "Vulkan";
+  #elif defined(VIDEO_DIRECT3D)
   return "Direct3D 9.0";
   #elif defined(VIDEO_WGL)
   return "OpenGL 3.2";

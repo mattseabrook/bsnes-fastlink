@@ -3,6 +3,8 @@
 #include <nall/platform.hpp>
 #include <nall/string.hpp>
 
+//clang-cl: COM headers in shlwapi.h need interface=struct
+#define interface struct
 #include <shlwapi.h>
 #undef interface
 #ifndef KEY_WOW64_64KEY

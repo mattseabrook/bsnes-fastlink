@@ -191,8 +191,6 @@ auto PPU::refresh() -> void {
     return ppufast.refresh();
   }
 
-  if(system.runAhead) return;
-
   auto output = this->output;
   auto pitch  = 512;
   auto width  = 512;

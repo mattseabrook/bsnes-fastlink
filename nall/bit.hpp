@@ -1,12 +1,23 @@
 #pragma once
 
+#include <limits>
+
 #include <nall/stdint.hpp>
+#include <nall/traits.hpp>
 
 namespace nall {
 
 template<uint bits> inline auto uclamp(const uintmax x) -> uintmax {
   enum : uintmax { b = 1ull << (bits - 1), y = b * 2 - 1 };
   return y + ((x - y) & -(x < y));  //min(x, y);
+}
+
+template<uint bits, typename T, enable_if_t<is_floating_point<T>::value, int> = 0>
+inline auto uclamp(const T x) -> uintmax {
+  constexpr uint64_t max = bits >= 64 ? std::numeric_limits<uint64_t>::max() : ((1ull << bits) - 1ull);
+  if(x <= (T)0.0) return 0;
+  if(x >= (T)max) return max;
+  return (uint64_t)x;
 }
 
 template<uint bits> inline auto uclip(const uintmax x) -> uintmax {
@@ -17,6 +28,15 @@ template<uint bits> inline auto uclip(const uintmax x) -> uintmax {
 template<uint bits> inline auto sclamp(const intmax x) -> intmax {
   enum : intmax { b = 1ull << (bits - 1), m = b - 1 };
   return (x > m) ? m : (x < -b) ? -b : x;
+}
+
+template<uint bits, typename T, enable_if_t<is_floating_point<T>::value, int> = 0>
+inline auto sclamp(const T x) -> intmax {
+  constexpr int64_t max = bits >= 64 ? std::numeric_limits<int64_t>::max() : (int64_t)((1ull << (bits - 1)) - 1ull);
+  constexpr int64_t min = bits >= 64 ? std::numeric_limits<int64_t>::min() : -(max + 1);
+  if(x >= (T)max) return max;
+  if(x <= (T)min) return min;
+  return (int64_t)x;
 }
 
 template<uint bits> inline auto sclip(const intmax x) -> intmax {

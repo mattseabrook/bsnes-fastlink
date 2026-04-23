@@ -39,6 +39,7 @@ auto pWindow::initialize() -> void {
 auto pWindow::construct() -> void {
   hwnd = CreateWindow(L"hiroWindow", L"", ResizableStyle, 128, 128, 256, 256, 0, 0, GetModuleHandle(0), 0);
   SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)&reference);
+  setBackgroundColor(state().backgroundColor);
   setDroppable(state().droppable);
   setGeometry({128, 128, 256, 256});
 

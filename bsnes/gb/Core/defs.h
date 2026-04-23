@@ -29,8 +29,25 @@
 #define __builtin_bswap16(x) ({ typeof(x) _x = (x); _x >> 8 | _x << 8; })
 #endif
 
+#if defined(_MSC_VER) || (defined(__clang__) && defined(_WIN32))
+//Pre-include CRT headers that use __declspec(noinline) before we redefine it
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifndef _SSIZE_T_DEFINED
+  #define _SSIZE_T_DEFINED
+  #ifdef _WIN64
+    typedef long long ssize_t;
+  #else
+    typedef long ssize_t;
+  #endif
+#endif
+#define internal
+#define noinline __declspec(noinline)
+#else
 #define internal __attribute__((visibility("hidden")))
 #define noinline __attribute__((noinline))
+#endif
 
 #if __clang__
 #define unrolled _Pragma("unroll")

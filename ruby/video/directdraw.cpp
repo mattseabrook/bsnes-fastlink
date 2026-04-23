@@ -1,5 +1,4 @@
 #include <ddraw.h>
-#undef interface
 
 static LRESULT CALLBACK VideoDirectDraw7_WindowProcedure(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if(msg == WM_SYSKEYDOWN && wparam == VK_F4) return false;
@@ -146,10 +145,10 @@ private:
       _context = (HWND)self.context;
     }
 
-    LPDIRECTDRAW interface = nullptr;
-    DirectDrawCreate(0, &interface, 0);
-    interface->QueryInterface(IID_IDirectDraw7, (void**)&_interface);
-    interface->Release();
+    LPDIRECTDRAW iface = nullptr;
+    DirectDrawCreate(0, &iface, 0);
+    iface->QueryInterface(IID_IDirectDraw7, (void**)&_interface);
+    iface->Release();
 
     _interface->SetCooperativeLevel(_context, DDSCL_NORMAL);
 

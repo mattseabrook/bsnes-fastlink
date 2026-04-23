@@ -1,4 +1,16 @@
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+#if defined(PLATFORM_WINDOWS)
+#include <hidsdi.h>
+#endif
+
 enum : uint { BindingLimit = 4 };
+inline constexpr auto NativeInputDriverName = "Win32 Raw Input";
 
 struct InputMapping {
   auto bind() -> void;
@@ -80,10 +92,15 @@ struct InputManager {
   auto onChange(shared_pointer<HID::Device> device, uint group, uint input, int16_t oldValue, int16_t newValue) -> void;
   auto mapping(uint port, uint device, uint input) -> maybe<InputMapping&>;
   auto findMouse() -> shared_pointer<HID::Device>;
+  auto flushWorkerEvents() -> void;
 
   //hotkeys.cpp
   auto bindHotkeys() -> void;
   auto pollHotkeys() -> void;
+
+  //fastlink: HID worker thread
+  auto startWorker() -> void;
+  auto stopWorker() -> void;
 
 public:
   vector<shared_pointer<HID::Device>> devices;
@@ -95,6 +112,88 @@ public:
 
   uint turboCounter = 0;
   uint turboFrequency = 0;
+
+  struct ChangeEvent {
+    shared_pointer<HID::Device> device;
+    uint group = 0;
+    uint input = 0;
+    int16_t oldValue = 0;
+    int16_t newValue = 0;
+  };
+
+  //fastlink: worker thread state
+  ::std::thread _pollThread;
+  ::std::mutex _deviceMutex;
+  ::std::mutex _changeMutex;
+  ::std::atomic<bool> _pollRunning{false};
+  ::std::atomic<bool> _devicesChanged{false};
+  ::std::thread::id _mainThreadID;
+  vector<shared_pointer<HID::Device>> _pendingDevices;
+  ::std::vector<ChangeEvent> _pendingChanges;
+};
+
+struct NativeInputManager {
+  auto initialize() -> bool;
+  auto terminate() -> void;
+  auto driver() const -> string { return NativeInputDriverName; }
+  auto ready() const -> bool { return _ready; }
+  auto pollGamepad(uint port, uint input) -> int16;
+  auto rumbleGamepad(uint port, uint input, bool enable) -> void;
+
+private:
+  bool _ready = false;
+
+  #if defined(PLATFORM_WINDOWS)
+  struct HidPadState {
+    bool attached = false;
+    bool left = false;
+    bool right = false;
+    bool up = false;
+    bool down = false;
+    bool buttons[32] = {};
+  };
+
+  struct HidPad {
+    HANDLE device = nullptr;
+    USHORT vendorID = 0;
+    USHORT productID = 0;
+    ::std::vector<BYTE> preparsed;
+    HIDP_CAPS caps = {};
+    HidPadState state;
+    ::std::vector<USHORT> buttonDataIndices;
+  };
+
+  auto threadMain() -> void;
+  auto signalReady(bool ready) -> void;
+  auto registerRawInput(HWND window) -> bool;
+  auto unregisterRawInput() -> void;
+  auto removePad(HANDLE device) -> void;
+  auto handleRawInput(HRAWINPUT rawInput) -> void;
+  auto handleRawKeyboard(const RAWKEYBOARD& keyboard) -> void;
+  auto handleRawHid(HANDLE device, const RAWHID& hid) -> void;
+  auto initializeRawHidPad(HANDLE device, HidPad& pad) -> bool;
+  auto getUsageInfo(const HidPad& pad, USAGE usage, LONG& logicalMin, LONG& logicalMax, USHORT& bitSize) const -> bool;
+  auto updateRawHidDPad(HidPadState& state, ULONG hat) -> void;
+  auto updateRawHidPadReport(HidPad& pad, const BYTE* report, ULONG reportLength) -> void;
+  auto mapKeyboard(uint port, uint input) const -> bool;
+  auto mapPad(const HidPad& pad, uint input) const -> bool;
+  auto keyPressed(WORD key) const -> bool;
+
+  static auto resolveVirtualKey(const RAWKEYBOARD& keyboard) -> WORD;
+  static auto isXInputDevice(HANDLE device) -> bool;
+  static auto CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) -> LRESULT;
+
+  ::std::thread _thread;
+  ::std::mutex _stateMutex;
+  ::std::mutex _readyMutex;
+  ::std::condition_variable _readyCondition;
+  ::std::vector<HidPad> _pads;
+  ::std::array<uint8_t, 256> _keyboardState = {};
+  HWND _window = nullptr;
+  bool _running = false;
+  bool _readySignal = false;
+  #endif
 };
 
 extern InputManager inputManager;
+extern NativeInputManager nativeInputManager;

@@ -8,13 +8,17 @@ struct Presentation : Window {
   auto onDrop(vector<string> locations) -> void;
   auto updateProgramIcon() -> void;
   auto updateStatusIcon() -> void;
+  auto minimumWindowSize() const -> Size;
   auto resizeWindow() -> void;
+  auto restoreWindowGeometry() -> bool;
+  auto saveWindowGeometry() -> void;
   auto updateStatus() -> void;
   auto updateDeviceMenu() -> void;
   auto updateDeviceSelections() -> void;
   auto updateSizeMenu() -> void;
   auto updateStateMenus() -> void;
   auto clearRecentGames() -> void;
+  auto locateCurrentMonitor(Geometry geometry) const -> string;
   auto updateRecentGames() -> void;
   auto addRecentGame(string location) -> void;
   auto updateShaders() -> void;

@@ -14,7 +14,7 @@ struct Settings : Markup::Node {
     bool flush = false;
     string monitor = "Primary";
     string format = "Default";
-    string shader = "Blur";
+    string shader = "None";
 
     uint luminance = 100;
     uint saturation = 100;
@@ -97,9 +97,6 @@ struct Settings : Markup::Node {
     struct Serialization {
       string method = "Fast";
     } serialization;
-    struct RunAhead {
-      uint frames = 0;
-    } runAhead;
     struct Hack {
       bool hotfixes = true;
       string entropy = "Low";
@@ -141,10 +138,19 @@ struct Settings : Markup::Node {
   } emulator;
 
   struct General {
+    struct Window {
+      int x = 128;
+      int y = 128;
+      uint width = 0;
+      uint height = 0;
+      string monitor = "Primary";
+    } window;
+
     bool statusBar = true;
     bool screenSaver = false;
     bool toolTips = true;
     bool crashed = false;
+    string crashComponent;
     bool nativeFileDialogs = false;
   } general;
 };
@@ -334,16 +340,6 @@ struct EnhancementSettings : VerticalLayout {
   auto create() -> void;
 
 public:
-  Label runAheadLabel{this, Size{~0, 0}, 2};
-  HorizontalLayout runAheadLayout{this, Size{~0, 0}};
-    RadioLabel runAhead0{&runAheadLayout, Size{0, 0}};
-    RadioLabel runAhead1{&runAheadLayout, Size{0, 0}};
-    RadioLabel runAhead2{&runAheadLayout, Size{0, 0}};
-    RadioLabel runAhead3{&runAheadLayout, Size{0, 0}};
-    RadioLabel runAhead4{&runAheadLayout, Size{0, 0}};
-    Group runAheadGroup{&runAhead0, &runAhead1, &runAhead2, &runAhead3, &runAhead4};
-  Canvas runAheadSpacer{this, Size{~0, 1}};
-  //
   Label overclockingLabel{this, Size{~0, 0}, 2};
   TableLayout overclockingLayout{this, Size{~0, 0}};
     Label cpuLabel{&overclockingLayout, Size{0, 0}};

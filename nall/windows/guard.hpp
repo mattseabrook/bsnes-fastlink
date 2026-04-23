@@ -2,7 +2,13 @@
 #define NALL_WINDOWS_GUARD_HPP
 
 #define boolean WindowsBoolean
-#define interface WindowsInterface
+//clang-cl/MSVC: COM headers need interface=struct, SDK needs far/near=nothing
+#undef interface
+#define interface struct
+#undef far
+#undef near
+#define far
+#define near
 
 #undef UNICODE
 #undef WINVER
@@ -23,7 +29,6 @@
 
 #undef boolean
 #undef interface
-
 #undef far
 #undef near
 

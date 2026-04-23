@@ -2,7 +2,28 @@
 namespace Instances { Instance<Presentation> presentation; }
 Presentation& presentation = Instances::presentation();
 
+namespace {
+  #if defined(PLATFORM_WINDOWS)
+  constexpr auto HotkeySettingsIndex = 2;
+  constexpr auto PathSettingsIndex = 3;
+  constexpr auto EmulatorSettingsIndex = 4;
+  constexpr auto EnhancementSettingsIndex = 5;
+  constexpr auto CompatibilitySettingsIndex = 6;
+  constexpr auto DriverSettingsIndex = 7;
+  #else
+  constexpr auto InputSettingsIndex = 2;
+  constexpr auto HotkeySettingsIndex = 3;
+  constexpr auto PathSettingsIndex = 4;
+  constexpr auto EmulatorSettingsIndex = 5;
+  constexpr auto EnhancementSettingsIndex = 6;
+  constexpr auto CompatibilitySettingsIndex = 7;
+  constexpr auto DriverSettingsIndex = 8;
+  #endif
+}
+
 auto Presentation::create() -> void {
+  setBackgroundColor({0, 0, 0});
+
   systemMenu.setText(tr("System"));
   loadGame.setIcon(Icon::Action::Open).setText({tr("Load Game"), " ..."}).onActivate([&] {
     program.load();
@@ -103,13 +124,17 @@ auto Presentation::create() -> void {
   });
   videoSettings.setIcon(Icon::Device::Display).setText("Video ...").onActivate([&] { settingsWindow.show(0); });
   audioSettings.setIcon(Icon::Device::Speaker).setText("Audio ...").onActivate([&] { settingsWindow.show(1); });
-  inputSettings.setIcon(Icon::Device::Joypad).setText("Input ...").onActivate([&] { settingsWindow.show(2); });
-  hotkeySettings.setIcon(Icon::Device::Keyboard).setText("Hotkeys ...").onActivate([&] { settingsWindow.show(3); });
-  pathSettings.setIcon(Icon::Emblem::Folder).setText("Paths ...").onActivate([&] { settingsWindow.show(4); });
-  emulatorSettings.setIcon(Icon::Action::Settings).setText("Emulator ...").onActivate([&] { settingsWindow.show(5); });
-  enhancementSettings.setIcon(Icon::Action::Add).setText("Enhancements ...").onActivate([&] { settingsWindow.show(6); });
-  compatibilitySettings.setIcon(Icon::Action::Remove).setText("Compatibility ...").onActivate([&] { settingsWindow.show(7); });
-  driverSettings.setIcon(Icon::Place::Settings).setText("Drivers ...").onActivate([&] { settingsWindow.show(8); });
+  #if !defined(PLATFORM_WINDOWS)
+  inputSettings.setIcon(Icon::Device::Joypad).setText("Input ...").onActivate([&] { settingsWindow.show(InputSettingsIndex); });
+  #else
+  inputSettings.setVisible(false);
+  #endif
+  hotkeySettings.setIcon(Icon::Device::Keyboard).setText("Hotkeys ...").onActivate([&] { settingsWindow.show(HotkeySettingsIndex); });
+  pathSettings.setIcon(Icon::Emblem::Folder).setText("Paths ...").onActivate([&] { settingsWindow.show(PathSettingsIndex); });
+  emulatorSettings.setIcon(Icon::Action::Settings).setText("Emulator ...").onActivate([&] { settingsWindow.show(EmulatorSettingsIndex); });
+  enhancementSettings.setIcon(Icon::Action::Add).setText("Enhancements ...").onActivate([&] { settingsWindow.show(EnhancementSettingsIndex); });
+  compatibilitySettings.setIcon(Icon::Action::Remove).setText("Compatibility ...").onActivate([&] { settingsWindow.show(CompatibilitySettingsIndex); });
+  driverSettings.setIcon(Icon::Place::Settings).setText("Drivers ...").onActivate([&] { settingsWindow.show(DriverSettingsIndex); });
 
   toolsMenu.setText(tr("Tools")).setVisible(false);
   saveState.setIcon(Icon::Media::Record).setText("Save State");
@@ -190,7 +215,7 @@ auto Presentation::create() -> void {
     .setAlignment(*this)
     .show();
   });
-  aboutBsnes.setIcon(Icon::Prompt::Question).setText({tr("About bsnes"), " ..."}).onActivate([&] {
+  aboutBsnes.setIcon(Icon::Prompt::Question).setText({tr("About bsnes-fastlink"), " ..."}).onActivate([&] {
     AboutDialog()
     .setName(Emulator::Name)
     .setLogo(Resource::Logo)
@@ -252,10 +277,18 @@ auto Presentation::create() -> void {
   onClose([&] {
     program.quit();
   });
+  onMove([&] {
+    saveWindowGeometry();
+  });
+  onSize([&] {
+    saveWindowGeometry();
+  });
 
-  setTitle({"bsnes v", Emulator::Version});
-  resizeWindow();
-  setAlignment(Alignment::Center);
+  setTitle({Emulator::Name, " v", Emulator::Version});
+  if(!restoreWindowGeometry()) {
+    resizeWindow();
+    setAlignment(Alignment::Center);
+  }
 
   #if defined(PLATFORM_MACOS)
   Application::Cocoa::onAbout([&] { aboutBsnes.doActivate(); });
@@ -274,7 +307,11 @@ auto Presentation::onDrop(vector<string> locations) -> void {
 }
 
 auto Presentation::updateProgramIcon() -> void {
+  #if defined(PLATFORM_WINDOWS)
+  presentation.iconLayout.setVisible(false);
+  #else
   presentation.iconLayout.setVisible(!emulator->loaded() && !settings.video.snow);
+  #endif
   presentation.layout.resize();
   //todo: video.clear() is not working on macOS/OpenGL 3.2
   if(auto [output, length] = video.acquire(1, 1); output) {
@@ -312,13 +349,125 @@ auto Presentation::resizeWindow() -> void {
   if(fullScreen()) return;
   if(maximized()) setMaximized(false);
 
+  auto minimumSize = minimumWindowSize();
   uint width = 256 * (settings.video.aspectCorrection ? 8.0 / 7.0 : 1.0);
   uint height = (settings.video.overscan ? 240.0 : 224.0);
-  uint multiplier = max(1, settings.video.multiplier);
   uint statusHeight = settings.general.statusBar ? StatusHeight : 0;
+  uint multiplier = max(1, settings.video.multiplier);
 
-  setMinimumSize({width, height + statusHeight});
+  setMinimumSize(minimumSize);
   setSize({width * multiplier, height * multiplier + statusHeight});
+}
+
+auto Presentation::minimumWindowSize() const -> Size {
+  uint width = 256 * (settings.video.aspectCorrection ? 8.0 / 7.0 : 1.0);
+  uint height = (settings.video.overscan ? 240.0 : 224.0);
+  uint statusHeight = settings.general.statusBar ? StatusHeight : 0;
+  return {width, height + statusHeight};
+}
+
+auto Presentation::restoreWindowGeometry() -> bool {
+  auto minimumSize = this->minimumWindowSize();
+  setMinimumSize(minimumSize);
+
+  auto width = max((int)settings.general.window.width, (int)minimumSize.width());
+  auto height = max((int)settings.general.window.height, (int)minimumSize.height());
+  if(width <= 0 || height <= 0) return false;
+
+  auto x = settings.general.window.x;
+  auto y = settings.general.window.y;
+  auto monitorName = settings.general.window.monitor;
+
+  auto monitors = ruby::Video::hasMonitors();
+  ruby::Video::Monitor fallbackMonitor;
+  bool haveFallbackMonitor = false;
+  for(auto& monitor : monitors) {
+    if(monitor.primary && !haveFallbackMonitor) {
+      fallbackMonitor = monitor;
+      haveFallbackMonitor = true;
+    }
+    if(monitor.name != monitorName) continue;
+    width = min(width, monitor.width);
+    height = min(height, monitor.height);
+    x = max(monitor.x, min(x, monitor.x + monitor.width - width));
+    y = max(monitor.y, min(y, monitor.y + monitor.height - height));
+    setGeometry({x, y, width, height});
+    return true;
+  }
+
+  if(!haveFallbackMonitor && monitors) {
+    fallbackMonitor = monitors.first();
+    haveFallbackMonitor = true;
+  }
+
+  bool intersectsMonitor = false;
+  for(auto& monitor : monitors) {
+    if(x + width > monitor.x && x < monitor.x + monitor.width && y + height > monitor.y && y < monitor.y + monitor.height) {
+      intersectsMonitor = true;
+      break;
+    }
+  }
+
+  if(!intersectsMonitor && haveFallbackMonitor) {
+    width = min(width, fallbackMonitor.width);
+    height = min(height, fallbackMonitor.height);
+    x = max(fallbackMonitor.x, min(x, fallbackMonitor.x + fallbackMonitor.width - width));
+    y = max(fallbackMonitor.y, min(y, fallbackMonitor.y + fallbackMonitor.height - height));
+  }
+
+  setGeometry({x, y, width, height});
+  return true;
+}
+
+auto Presentation::saveWindowGeometry() -> void {
+  if(fullScreen() || maximized()) return;
+
+  auto geometry = this->geometry();
+  auto width = (int)geometry.width();
+  auto height = (int)geometry.height();
+  if(width <= 0 || height <= 0) return;
+
+  auto x = (int)geometry.x();
+  auto y = (int)geometry.y();
+  auto monitor = locateCurrentMonitor(geometry);
+
+  if(settings.general.window.x == x && settings.general.window.y == y
+  && settings.general.window.width == (uint)width && settings.general.window.height == (uint)height
+  && settings.general.window.monitor == monitor) return;
+
+  settings.general.window.x = x;
+  settings.general.window.y = y;
+  settings.general.window.width = width;
+  settings.general.window.height = height;
+  settings.general.window.monitor = monitor;
+  settings.save();
+}
+
+auto Presentation::locateCurrentMonitor(Geometry geometry) const -> string {
+  auto centerX = geometry.x() + geometry.width() / 2.0;
+  auto centerY = geometry.y() + geometry.height() / 2.0;
+
+  string bestMonitor = "Primary";
+  uint64_t bestDistance = ~0ull;
+  for(auto& monitor : ruby::Video::hasMonitors()) {
+    if(centerX >= monitor.x && centerX < monitor.x + monitor.width && centerY >= monitor.y && centerY < monitor.y + monitor.height) {
+      return monitor.name;
+    }
+
+    int dx = 0;
+    if(centerX < monitor.x) dx = monitor.x - centerX;
+    if(centerX >= monitor.x + monitor.width) dx = centerX - (monitor.x + monitor.width - 1);
+    int dy = 0;
+    if(centerY < monitor.y) dy = monitor.y - centerY;
+    if(centerY >= monitor.y + monitor.height) dy = centerY - (monitor.y + monitor.height - 1);
+    uint64_t distance = (uint64_t)dx * dx + (uint64_t)dy * dy;
+    if(distance < bestDistance) {
+      bestDistance = distance;
+      bestMonitor = monitor.name;
+    }
+  }
+
+  return bestMonitor;
 }
 
 auto Presentation::updateDeviceMenu() -> void {

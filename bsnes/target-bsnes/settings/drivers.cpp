@@ -91,6 +91,10 @@ auto DriverSettings::create() -> void {
   audioSpacer.setColor({192, 192, 192});
 
   inputLabel.setText("Input").setFont(Font().setBold());
+  #if defined(PLATFORM_WINDOWS)
+  inputDriverLabel.setText("Backend:");
+  inputDriverUpdate.setText("Native").setEnabled(false);
+  #else
   inputDriverLabel.setText("Driver:");
   inputDriverOption.onChange([&] {
     inputDriverUpdate.setText(inputDriverOption.selected().text() != input.driver() ? "Change" : "Reload");
@@ -100,6 +104,7 @@ auto DriverSettings::create() -> void {
     "This is useful for APIs that lack auto-hotplug support,\n"
     "such as DirectInput and SDL."
   ).onActivate([&] { inputDriverChange(); });
+  #endif
   inputSpacer.setColor({192, 192, 192});
 
   syncModeLabel.setText("Synchronization Mode Presets:").setFont(Font().setBold());
@@ -171,16 +176,18 @@ auto DriverSettings::videoDriverChange() -> void {
   auto item = videoDriverOption.selected();
   settings.video.driver = item.text();
   if(!emulator->loaded() || item.text() == "None" || MessageDialog(
-    "Warning: incompatible drivers may cause bsnes to crash.\n"
+    "Warning: incompatible drivers may cause bsnes-fastlink to crash.\n"
     "It is highly recommended you unload your game first to be safe.\n"
     "Do you wish to proceed with the video driver change now anyway?"
   ).setAlignment(*settingsWindow).question() == "Yes") {
     program.save();
     program.saveUndoState();
     settings.general.crashed = true;
+    settings.general.crashComponent = "Video";
     settings.save();
     program.updateVideoDriver(settingsWindow);
     settings.general.crashed = false;
+    settings.general.crashComponent = "";
     settings.save();
     videoDriverChanged();
   }
@@ -246,16 +253,18 @@ auto DriverSettings::audioDriverChange() -> void {
   auto item = audioDriverOption.selected();
   settings.audio.driver = item.text();
   if(!emulator->loaded() || item.text() == "None" || MessageDialog(
-    "Warning: incompatible drivers may cause bsnes to crash.\n"
+    "Warning: incompatible drivers may cause bsnes-fastlink to crash.\n"
     "It is highly recommended you unload your game first to be safe.\n"
     "Do you wish to proceed with the audio driver change now anyway?"
   ).setAlignment(*settingsWindow).question() == "Yes") {
     program.save();
     program.saveUndoState();
     settings.general.crashed = true;
+    settings.general.crashComponent = "Audio";
     settings.save();
     program.updateAudioDriver(settingsWindow);
     settings.general.crashed = false;
+    settings.general.crashComponent = "";
     settings.save();
     audioDriverChanged();
   }
@@ -317,6 +326,16 @@ auto DriverSettings::audioLatencyChange() -> void {
 //
 
 auto DriverSettings::inputDriverChanged() -> void {
+  #if defined(PLATFORM_WINDOWS)
+  inputDriverOption.reset();
+  ComboButtonItem item{&inputDriverOption};
+  item.setText(NativeInputDriverName).setSelected();
+  inputDriverOption.setEnabled(false);
+  inputDriverActive.setText({"Active backend: ", NativeInputDriverName});
+  setGeometry(geometry());
+  return;
+  #endif
+
   inputDriverOption.reset();
   for(auto& driver : input.hasDrivers()) {
     ComboButtonItem item{&inputDriverOption};
@@ -329,19 +348,25 @@ auto DriverSettings::inputDriverChanged() -> void {
 }
 
 auto DriverSettings::inputDriverChange() -> void {
+  #if defined(PLATFORM_WINDOWS)
+  return;
+  #endif
+
   auto item = inputDriverOption.selected();
   settings.input.driver = item.text();
   if(!emulator->loaded() || item.text() == "None" || MessageDialog(
-    "Warning: incompatible drivers may cause bsnes to crash.\n"
+    "Warning: incompatible drivers may cause bsnes-fastlink to crash.\n"
     "It is highly recommended you unload your game first to be safe.\n"
     "Do you wish to proceed with the input driver change now anyway?"
   ).setAlignment(*settingsWindow).question() == "Yes") {
     program.save();
     program.saveUndoState();
     settings.general.crashed = true;
+    settings.general.crashComponent = "Input";
     settings.save();
     program.updateInputDriver(settingsWindow);
     settings.general.crashed = false;
+    settings.general.crashComponent = "";
     settings.save();
     inputDriverChanged();
   }

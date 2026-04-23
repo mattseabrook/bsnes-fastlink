@@ -28,7 +28,7 @@ using namespace nall;
 #include <emulator/audio/audio.hpp>
 
 namespace Emulator {
-  static const string Name      = "bsnes";
+  static const string Name      = "bsnes-fastlink";
   static const string Version   = "115";
   static const string Copyright = "bsnes team";
   static const string License   = "GPLv3 or later";

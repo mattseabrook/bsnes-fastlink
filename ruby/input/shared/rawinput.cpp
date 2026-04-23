@@ -9,6 +9,7 @@ struct RawInput {
   bool initialized = false;
   function<void (RAWINPUT*)> updateKeyboard;
   function<void (RAWINPUT*)> updateMouse;
+  function<void (RAWINPUT*)> updateJoypad;
 
   struct Device {
     HANDLE handle = nullptr;
@@ -77,6 +78,13 @@ struct RawInput {
   }
 
   auto windowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) -> LRESULT {
+    if(msg == WM_INPUT_DEVICE_CHANGE) {
+      WaitForSingleObject(mutex, INFINITE);
+      scanDevices();
+      ReleaseMutex(mutex);
+      return 0;
+    }
+
     if(msg != WM_INPUT) return DefWindowProc(hwnd, msg, wparam, lparam);
 
     uint size = 0;
@@ -91,6 +99,10 @@ struct RawInput {
 
     if(input->header.dwType == RIM_TYPEMOUSE) {
       if(updateMouse) updateMouse(input);
+    }
+
+    if(input->header.dwType == RIM_TYPEHID) {
+      if(updateJoypad) updateJoypad(input);
     }
 
     ReleaseMutex(mutex);
@@ -117,7 +129,7 @@ struct RawInput {
 
     scanDevices();
 
-    RAWINPUTDEVICE device[2];
+    RAWINPUTDEVICE device[4];
     //capture all keyboard input
     device[0].usUsagePage = 1;
     device[0].usUsage = 6;
@@ -128,7 +140,17 @@ struct RawInput {
     device[1].usUsage = 2;
     device[1].dwFlags = RIDEV_INPUTSINK;
     device[1].hwndTarget = hwnd;
-    RegisterRawInputDevices(device, 2, sizeof(RAWINPUTDEVICE));
+    //capture all joystick input
+    device[2].usUsagePage = 1;
+    device[2].usUsage = 4;
+    device[2].dwFlags = RIDEV_INPUTSINK | RIDEV_DEVNOTIFY;
+    device[2].hwndTarget = hwnd;
+    //capture all gamepad input
+    device[3].usUsagePage = 1;
+    device[3].usUsage = 5;
+    device[3].dwFlags = RIDEV_INPUTSINK | RIDEV_DEVNOTIFY;
+    device[3].hwndTarget = hwnd;
+    RegisterRawInputDevices(device, 4, sizeof(RAWINPUTDEVICE));
 
     WaitForSingleObject(mutex, INFINITE);
     ready = true;

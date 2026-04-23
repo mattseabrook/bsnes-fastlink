@@ -21,6 +21,7 @@ namespace Math {
   #include <shellapi.h>
   #include <nall/windows/guard.hpp>
   #include <nall/windows/utf8.hpp>
+  #include <nall/windows/msvc-posix.hpp>
 #endif
 
 #include <atomic>
@@ -37,9 +38,15 @@ namespace Math {
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <utime.h>
-#include <fcntl.h>
-#include <unistd.h>
+
+#if defined(PLATFORM_WINDOWS)
+  #include <sys/utime.h>
+  #include <io.h>
+#else
+  #include <utime.h>
+  #include <fcntl.h>
+  #include <unistd.h>
+#endif
 
 #include <sys/types.h>
 #include <sys/stat.h>

@@ -1,5 +1,9 @@
 #include <emulator/emulator.hpp>
 
+//LZMA uses __declspec(noinline) via MY_NO_INLINE; prevent nall's macro from interfering
+#pragma push_macro("noinline")
+#undef noinline
+
 #include "7zAlloc.c"
 #include "7zArcIn.c"
 #include "7zBuf.c"
@@ -79,3 +83,5 @@ auto extract(string_view filename) -> vector<uint8_t> {
 }
 
 }
+
+#pragma pop_macro("noinline")

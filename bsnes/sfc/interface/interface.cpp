@@ -333,12 +333,4 @@ auto Interface::setFrameSkip(uint frameSkip) -> void {
   system.frameCounter = frameSkip;
 }
 
-auto Interface::runAhead() -> bool {
-  return system.runAhead;
-}
-
-auto Interface::setRunAhead(bool runAhead) -> void {
-  system.runAhead = runAhead;
-}
-
 }

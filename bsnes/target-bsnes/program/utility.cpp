@@ -1,5 +1,15 @@
+namespace {
+auto useNativeFileDialogs() -> bool {
+  #if defined(PLATFORM_WINDOWS)
+  return true;
+  #else
+  return settings.general.nativeFileDialogs;
+  #endif
+}
+}
+
 auto Program::openGame(BrowserDialog& dialog) -> string {
-  if(!settings.general.nativeFileDialogs) {
+  if(!useNativeFileDialogs()) {
     return dialog.openObject();
   }
 
@@ -12,7 +22,7 @@ auto Program::openGame(BrowserDialog& dialog) -> string {
 }
 
 auto Program::openFile(BrowserDialog& dialog) -> string {
-  if(!settings.general.nativeFileDialogs) {
+  if(!useNativeFileDialogs()) {
     return dialog.openFile();
   }
 
@@ -25,7 +35,7 @@ auto Program::openFile(BrowserDialog& dialog) -> string {
 }
 
 auto Program::saveFile(BrowserDialog& dialog) -> string {
-  if(!settings.general.nativeFileDialogs) {
+  if(!useNativeFileDialogs()) {
     return dialog.saveFile();
   }
 
@@ -38,7 +48,7 @@ auto Program::saveFile(BrowserDialog& dialog) -> string {
 }
 
 auto Program::selectPath() -> string {
-  if(!settings.general.nativeFileDialogs) {
+  if(!useNativeFileDialogs()) {
     BrowserDialog dialog;
     dialog.setPath(Path::desktop());
     return dialog.selectFolder();
@@ -74,7 +84,7 @@ auto Program::updateStatus() -> void {
     frameRate = tr("Frame Advance");
   } else if(presentation.pauseEmulation.checked()) {
     frameRate = tr("Paused");
-  } else if(!focused() && inputSettings.pauseEmulation.checked()) {
+  } else if(!focused() && settings.input.defocus == "Pause") {
     frameRate = tr("Paused");
   } else {
     frameRate = statusFrameRate;
@@ -120,7 +130,7 @@ auto Program::inactive() -> bool {
   if(!emulator->loaded()) return true;
   if(presentation.pauseEmulation.checked()) return true;
   if(presentation.frameAdvance.checked() && frameAdvanceLock) return true;
-  if(!focused() && inputSettings.pauseEmulation.checked()) return true;
+  if(!focused() && settings.input.defocus == "Pause") return true;
   return false;
 }
 

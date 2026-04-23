@@ -22,9 +22,17 @@ using namespace ruby;
   #include <nall/macos/guard.hpp>
 #elif defined(DISPLAY_WINDOWS)
   #define far
+  #define near
+  #define interface struct
   #include <mmsystem.h>
 #endif
 
 #include <ruby/video/video.cpp>
 #include <ruby/audio/audio.cpp>
 #include <ruby/input/input.cpp>
+
+#if defined(DISPLAY_WINDOWS)
+  #undef far
+  #undef near
+  #undef interface
+#endif

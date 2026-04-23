@@ -43,6 +43,13 @@ template<typename R, typename... P> struct function<auto (P...) -> R> {
     return *this;
   }
 
+  template<typename F, typename = enable_if_t<!is_same<typename decay<F>::type, function>::value && !std::is_pointer<typename decay<F>::type>::value>>
+  auto operator=(F&& source) -> function& {
+    if(callback) { delete callback; callback = nullptr; }
+    callback = new lambda<typename decay<F>::type>(forward<F>(source));
+    return *this;
+  }
+
 private:
   struct container {
     virtual auto operator()(P... p) const -> R = 0;

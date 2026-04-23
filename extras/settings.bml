@@ -57,8 +57,6 @@ Emulator
   AutoLoadStateOnLoad: false
   Serialization
     Method: Fast
-  RunAhead
-    Frames: 0
   Hack
     Hotfixes: true
     Entropy: Low

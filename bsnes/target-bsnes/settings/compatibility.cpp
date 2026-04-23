@@ -40,7 +40,7 @@ auto CompatibilitySettings::create() -> void {
     "This option emulates a bug in older releases of ZSNES and Snes9X where VRAM blocking was not emulated.\n"
     "A few older ROM hacks relied on this behavior, and will render graphics incorrectly if not enabled.\n"
     "Not only is this extremely inaccurate to real hardware, it also hurts the speed of the fast PPU.\n"
-    "Do not enable this option unless you need to play a game that is incompatible with bsnes otherwise."
+    "Do not enable this option unless you need to play a game that is incompatible with bsnes-fastlink otherwise."
   ).setChecked(settings.emulator.hack.ppu.noVRAMBlocking).onToggle([&] {
     settings.emulator.hack.ppu.noVRAMBlocking = noVRAMBlocking.checked();
     emulator->configure("Hacks/PPU/NoVRAMBlocking", settings.emulator.hack.ppu.noVRAMBlocking);

@@ -1,16 +1,11 @@
-#include <xinput.h>
-#define DIRECTINPUT_VERSION 0x0800
-#include <dinput.h>
-
 #include "shared/rawinput.cpp"
 #include "keyboard/rawinput.cpp"
 #include "mouse/rawinput.cpp"
-#include "joypad/xinput.cpp"
-#include "joypad/directinput.cpp"
+#include "joypad/rawinput.cpp"
 
 struct InputWindows : InputDriver {
   InputWindows& self = *this;
-  InputWindows(Input& super) : InputDriver(super), keyboard(super), mouse(super), joypadXInput(super), joypadDirectInput(super) {}
+  InputWindows(Input& super) : InputDriver(super), keyboard(super), mouse(super), joypad(super) {}
   ~InputWindows() { terminate(); }
 
   auto create() -> bool override {
@@ -32,14 +27,11 @@ struct InputWindows : InputDriver {
     vector<shared_pointer<HID::Device>> devices;
     keyboard.poll(devices);
     mouse.poll(devices);
-    joypadXInput.poll(devices);
-    joypadDirectInput.poll(devices);
+    joypad.poll(devices);
     return devices;
   }
 
   auto rumble(uint64_t id, bool enable) -> bool override {
-    if(joypadXInput.rumble(id, enable)) return true;
-    if(joypadDirectInput.rumble(id, enable)) return true;
     return false;
   }
 
@@ -61,13 +53,9 @@ private:
       } while(!rawinput.ready);
     }
 
-    DirectInput8Create(GetModuleHandle(0), DIRECTINPUT_VERSION, IID_IDirectInput8, (void**)&directInputContext, 0);
-    if(!directInputContext) return false;
-
     if(!keyboard.initialize()) return false;
     if(!mouse.initialize(self.context)) return false;
-    bool xinputAvailable = joypadXInput.initialize();
-    if(!joypadDirectInput.initialize(self.context, directInputContext, xinputAvailable)) return false;
+    if(!joypad.initialize()) return false;
     return isReady = true;
   }
 
@@ -76,19 +64,11 @@ private:
 
     keyboard.terminate();
     mouse.terminate();
-    joypadXInput.terminate();
-    joypadDirectInput.terminate();
-
-    if(directInputContext) {
-      directInputContext->Release();
-      directInputContext = nullptr;
-    }
+    joypad.terminate();
   }
 
   bool isReady = false;
   InputKeyboardRawInput keyboard;
   InputMouseRawInput mouse;
-  InputJoypadXInput joypadXInput;
-  InputJoypadDirectInput joypadDirectInput;
-  LPDIRECTINPUT8 directInputContext = nullptr;
+  InputJoypadRawInput joypad;
 };

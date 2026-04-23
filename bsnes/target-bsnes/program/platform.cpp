@@ -6,6 +6,10 @@
 #include <heuristics/bs-memory.cpp>
 #include <heuristics/sufami-turbo.cpp>
 
+namespace {
+constexpr uint NativeGamepadDeviceID = 1;
+}
+
 //ROM data is held in memory to support compressed archives, soft-patching, and game hacks
 auto Program::open(uint id, string name, vfs::file::mode mode, bool required) -> shared_pointer<vfs::file> {
   shared_pointer<vfs::file> result;
@@ -259,11 +263,19 @@ auto Program::audioFrame(const double* samples, uint channels) -> void {
 
 auto Program::inputPoll(uint port, uint device, uint input) -> int16 {
   int16 value = 0;
-  if(focused() || inputSettings.allowInput().checked()) {
+  if(focused() || settings.input.defocus == "Allow") {
+    #if defined(PLATFORM_WINDOWS)
+    if(device == NativeGamepadDeviceID) {
+      value = nativeInputManager.pollGamepad(port, input);
+    } else if(auto mapping = inputManager.mapping(port, device, input)) {
+      value = mapping->poll();
+    }
+    #else
     inputManager.poll();
     if(auto mapping = inputManager.mapping(port, device, input)) {
       value = mapping->poll();
     }
+    #endif
   }
   if(movie.mode == Movie::Mode::Recording) {
     movie.input.append(value);
@@ -279,7 +291,12 @@ auto Program::inputPoll(uint port, uint device, uint input) -> int16 {
 }
 
 auto Program::inputRumble(uint port, uint device, uint input, bool enable) -> void {
-  if(focused() || inputSettings.allowInput().checked() || !enable) {
+  if(focused() || settings.input.defocus == "Allow" || !enable) {
+    #if defined(PLATFORM_WINDOWS)
+    if(device == NativeGamepadDeviceID) {
+      return nativeInputManager.rumbleGamepad(port, input, enable);
+    }
+    #endif
     if(auto mapping = inputManager.mapping(port, device, input)) {
       return mapping->rumble(enable);
     }
