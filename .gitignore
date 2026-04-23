@@ -1,2 +1,4 @@
 hiro/qt/qt.moc
 research/snes9x-fastlink/src/platform/gtk/build/
+build/
+*.gch
