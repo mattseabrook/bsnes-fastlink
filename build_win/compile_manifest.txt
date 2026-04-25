@@ -37,6 +37,8 @@ bsnes/processor/arm7tdmi/arm7tdmi.cpp|build_win/obj/proc-arm7tdmi.obj|cpp
 bsnes/processor/spc700/spc700.cpp|build_win/obj/proc-spc700.obj|cpp
 bsnes/processor/wdc65816/wdc65816.cpp|build_win/obj/proc-wdc65816.obj|cpp
 bsnes/target-bsnes/bsnes.cpp|build_win/obj/target-bsnes.obj|cpp
+bsnes/target-bsnes/video/native-vulkan.cpp|build_win/obj/target-video.obj|cpp
+bsnes/target-bsnes/fastlink/ram-trace.cpp|build_win/obj/target-fastlink-ramtrace.obj|cpp
 bsnes/target-bsnes/program/program.cpp|build_win/obj/target-program.obj|cpp
 bsnes/target-bsnes/input/input.cpp|build_win/obj/target-input.obj|cpp
 bsnes/target-bsnes/presentation/presentation.cpp|build_win/obj/target-presentation.obj|cpp

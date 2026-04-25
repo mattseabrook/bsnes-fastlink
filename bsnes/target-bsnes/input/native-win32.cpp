@@ -1,8 +1,10 @@
 #if defined(PLATFORM_WINDOWS)
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <hidsdi.h>
+#include <avrt.h>
 
 namespace {
 constexpr LONG RawInputNeutralThreshold = 60;
@@ -56,7 +58,10 @@ auto NativeInputManager::initialize() -> bool {
   {
     ::std::lock_guard<::std::mutex> lock(_stateMutex);
     _keyboardState.fill(0);
+    _keyboardMask.store(0, ::std::memory_order_release);
+    for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
     _pads.clear();
+    _ignoredDevices.clear();
   }
 
   _ready = false;
@@ -80,7 +85,10 @@ auto NativeInputManager::terminate() -> void {
     ::std::lock_guard<::std::mutex> lock(_stateMutex);
     _window = nullptr;
     _keyboardState.fill(0);
+    _keyboardMask.store(0, ::std::memory_order_release);
+    for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
     _pads.clear();
+    _ignoredDevices.clear();
   }
 
   _ready = false;
@@ -89,6 +97,10 @@ auto NativeInputManager::terminate() -> void {
 
 auto NativeInputManager::threadMain() -> void {
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+  SetThreadPriorityBoost(GetCurrentThread(), FALSE);
+  DWORD taskIndex = 0;
+  HANDLE taskHandle = AvSetMmThreadCharacteristicsW(L"Games", &taskIndex);
+  if(taskHandle) AvSetMmThreadPriority(taskHandle, AVRT_PRIORITY_HIGH);
 
   static bool classRegistered = false;
   if(!classRegistered) {
@@ -100,6 +112,7 @@ auto NativeInputManager::threadMain() -> void {
   }
 
   if(!classRegistered) {
+    if(taskHandle) AvRevertMmThreadCharacteristics(taskHandle);
     signalReady(false);
     return;
   }
@@ -116,6 +129,7 @@ auto NativeInputManager::threadMain() -> void {
   );
 
   if(!window) {
+    if(taskHandle) AvRevertMmThreadCharacteristics(taskHandle);
     signalReady(false);
     return;
   }
@@ -131,6 +145,7 @@ auto NativeInputManager::threadMain() -> void {
       _window = nullptr;
     }
     DestroyWindow(window);
+    if(taskHandle) AvRevertMmThreadCharacteristics(taskHandle);
     signalReady(false);
     return;
   }
@@ -148,8 +163,12 @@ auto NativeInputManager::threadMain() -> void {
     ::std::lock_guard<::std::mutex> lock(_stateMutex);
     _window = nullptr;
     _keyboardState.fill(0);
+    _keyboardMask.store(0, ::std::memory_order_release);
+    for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
     _pads.clear();
+    _ignoredDevices.clear();
   }
+  if(taskHandle) AvRevertMmThreadCharacteristics(taskHandle);
   _running = false;
 }
 
@@ -206,16 +225,25 @@ auto NativeInputManager::removePad(HANDLE device) -> void {
   _pads.erase(::std::remove_if(_pads.begin(), _pads.end(), [&](auto& pad) {
     return pad.device == device;
   }), _pads.end());
+  _ignoredDevices.erase(::std::remove(_ignoredDevices.begin(), _ignoredDevices.end(), device), _ignoredDevices.end());
+  refreshPadMasksLocked();
 }
 
 auto NativeInputManager::handleRawInput(HRAWINPUT rawInput) -> void {
   UINT size = 0;
   if(GetRawInputData(rawInput, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) != 0 || size == 0) return;
 
-  ::std::vector<BYTE> buffer(size);
-  if(GetRawInputData(rawInput, RID_INPUT, buffer.data(), &size, sizeof(RAWINPUTHEADER)) != size) return;
+  ::std::array<BYTE, 1024> stackBuffer;
+  ::std::vector<BYTE> heapBuffer;
+  BYTE* buffer = stackBuffer.data();
+  if(size > stackBuffer.size()) {
+    heapBuffer.resize(size);
+    buffer = heapBuffer.data();
+  }
 
-  auto* input = reinterpret_cast<RAWINPUT*>(buffer.data());
+  if(GetRawInputData(rawInput, RID_INPUT, buffer, &size, sizeof(RAWINPUTHEADER)) != size) return;
+
+  auto* input = reinterpret_cast<RAWINPUT*>(buffer);
 
   if(input->header.dwType == RIM_TYPEKEYBOARD) {
     handleRawKeyboard(input->data.keyboard);
@@ -232,21 +260,36 @@ auto NativeInputManager::handleRawKeyboard(const RAWKEYBOARD& keyboard) -> void 
   auto virtualKey = resolveVirtualKey(keyboard);
   if(virtualKey == 0 || virtualKey >= _keyboardState.size()) return;
 
+  auto bit = keyboardMaskForKey(virtualKey);
+  if(bit) {
+    if(keyboard.Flags & RI_KEY_BREAK) {
+      _keyboardMask.fetch_and(~bit, ::std::memory_order_release);
+    } else {
+      _keyboardMask.fetch_or(bit, ::std::memory_order_release);
+    }
+  }
+
   ::std::lock_guard<::std::mutex> lock(_stateMutex);
   _keyboardState[virtualKey] = (keyboard.Flags & RI_KEY_BREAK) ? 0 : 1;
 }
 
 auto NativeInputManager::handleRawHid(HANDLE device, const RAWHID& hid) -> void {
-  if(isXInputDevice(device)) return;
-
   const auto reportLength = hid.dwSizeHid;
   if(reportLength == 0 || hid.dwCount == 0) return;
   const auto* report = hid.bRawData + (hid.dwCount - 1) * reportLength;
 
   ::std::lock_guard<::std::mutex> lock(_stateMutex);
+  if(::std::find(_ignoredDevices.begin(), _ignoredDevices.end(), device) != _ignoredDevices.end()) return;
+
   for(auto& pad : _pads) {
     if(pad.device != device) continue;
     updateRawHidPadReport(pad, report, reportLength);
+    refreshPadMasksLocked();
+    return;
+  }
+
+  if(isXInputDevice(device)) {
+    _ignoredDevices.push_back(device);
     return;
   }
 
@@ -254,6 +297,7 @@ auto NativeInputManager::handleRawHid(HANDLE device, const RAWHID& hid) -> void 
   if(!initializeRawHidPad(device, pad)) return;
   updateRawHidPadReport(pad, report, reportLength);
   _pads.push_back(::std::move(pad));
+  refreshPadMasksLocked();
 }
 
 auto NativeInputManager::initializeRawHidPad(HANDLE device, HidPad& pad) -> bool {
@@ -278,6 +322,9 @@ auto NativeInputManager::initializeRawHidPad(HANDLE device, HidPad& pad) -> bool
   pad.vendorID = (USHORT)info.hid.dwVendorId;
   pad.productID = (USHORT)info.hid.dwProductId;
   pad.state = {};
+  pad.xAxis = getUsageInfo(pad, 0x30);
+  pad.yAxis = getUsageInfo(pad, 0x31);
+  pad.hat = getUsageInfo(pad, 0x39);
 
   USHORT buttonCapsLength = pad.caps.NumberInputButtonCaps;
   if(buttonCapsLength == 0) return true;
@@ -304,13 +351,14 @@ auto NativeInputManager::initializeRawHidPad(HANDLE device, HidPad& pad) -> bool
   return true;
 }
 
-auto NativeInputManager::getUsageInfo(const HidPad& pad, USAGE usage, LONG& logicalMin, LONG& logicalMax, USHORT& bitSize) const -> bool {
+auto NativeInputManager::getUsageInfo(const HidPad& pad, USAGE usage) const -> HidUsageValue {
+  HidUsageValue result;
   auto valueCapsLength = pad.caps.NumberInputValueCaps;
-  if(valueCapsLength == 0) return false;
+  if(valueCapsLength == 0) return result;
 
   ::std::vector<HIDP_VALUE_CAPS> valueCaps(valueCapsLength);
   auto* preparsed = reinterpret_cast<PHIDP_PREPARSED_DATA>(const_cast<BYTE*>(pad.preparsed.data()));
-  if(HidP_GetValueCaps(HidP_Input, valueCaps.data(), &valueCapsLength, preparsed) != HIDP_STATUS_SUCCESS) return false;
+  if(HidP_GetValueCaps(HidP_Input, valueCaps.data(), &valueCapsLength, preparsed) != HIDP_STATUS_SUCCESS) return result;
 
   for(USHORT index = 0; index < valueCapsLength; index++) {
     auto& caps = valueCaps[index];
@@ -320,13 +368,14 @@ auto NativeInputManager::getUsageInfo(const HidPad& pad, USAGE usage, LONG& logi
     auto maximumUsage = caps.IsRange ? caps.Range.UsageMax : caps.NotRange.Usage;
     if(usage < minimumUsage || usage > maximumUsage) continue;
 
-    logicalMin = caps.LogicalMin;
-    logicalMax = caps.LogicalMax;
-    bitSize = caps.BitSize;
-    return logicalMax > logicalMin;
+    result.logicalMin = caps.LogicalMin;
+    result.logicalMax = caps.LogicalMax;
+    result.bitSize = caps.BitSize;
+    result.valid = result.logicalMax > result.logicalMin;
+    return result;
   }
 
-  return false;
+  return result;
 }
 
 auto NativeInputManager::updateRawHidDPad(HidPadState& state, ULONG hat) -> void {
@@ -352,75 +401,95 @@ auto NativeInputManager::updateRawHidPadReport(HidPad& pad, const BYTE* report, 
 
   auto dataLength = HidP_MaxDataListLength(HidP_Input, preparsed);
   if(dataLength > 0 && !pad.buttonDataIndices.empty()) {
-    ::std::vector<HIDP_DATA> dataList(dataLength);
-    if(HidP_GetData(HidP_Input, dataList.data(), &dataLength, preparsed, (PCHAR)report, reportLength) == HIDP_STATUS_SUCCESS) {
+    pad.dataList.resize(dataLength);
+    if(HidP_GetData(HidP_Input, pad.dataList.data(), &dataLength, preparsed, (PCHAR)report, reportLength) == HIDP_STATUS_SUCCESS) {
       for(ULONG index = 0; index < dataLength; index++) {
-        auto button = ::std::lower_bound(pad.buttonDataIndices.begin(), pad.buttonDataIndices.end(), dataList[index].DataIndex);
-        if(button == pad.buttonDataIndices.end() || *button != dataList[index].DataIndex) continue;
+        auto button = ::std::lower_bound(pad.buttonDataIndices.begin(), pad.buttonDataIndices.end(), pad.dataList[index].DataIndex);
+        if(button == pad.buttonDataIndices.end() || *button != pad.dataList[index].DataIndex) continue;
 
         auto buttonIndex = (uint)(button - pad.buttonDataIndices.begin());
-        if(buttonIndex >= MaximumRawButtons || !dataList[index].On) continue;
+        if(buttonIndex >= MaximumRawButtons || !pad.dataList[index].On) continue;
         state.buttons[buttonIndex] = true;
       }
     }
   }
 
-  LONG logicalMin = 0;
-  LONG logicalMax = 0;
-  USHORT bitSize = 0;
   ULONG value = 0;
 
-  auto readAxis = [&](USAGE usage, bool& negative, bool& positive) {
-    if(!getUsageInfo(pad, usage, logicalMin, logicalMax, bitSize)) return;
+  auto readAxis = [&](USAGE usage, const HidUsageValue& info, bool& negative, bool& positive) {
+    if(!info.valid) return;
     if(HidP_GetUsageValue(HidP_Input, 0x01, 0, usage, &value, preparsed, (PCHAR)report, reportLength) != HIDP_STATUS_SUCCESS) return;
 
     LONG signedValue = value;
-    if(logicalMin < 0 && bitSize > 0 && (value & (1ul << (bitSize - 1)))) {
-      signedValue = value | (~0ul << bitSize);
+    if(info.logicalMin < 0 && info.bitSize > 0 && info.bitSize < 32 && (value & (1ul << (info.bitSize - 1)))) {
+      signedValue = value | (~0ul << info.bitSize);
     }
 
-    auto normalized = ((int)(signedValue - logicalMin) * 200 / (logicalMax - logicalMin)) - 100;
+    auto normalized = ((int)(signedValue - info.logicalMin) * 200 / (info.logicalMax - info.logicalMin)) - 100;
     negative = normalized < -RawInputNeutralThreshold;
     positive = normalized > RawInputNeutralThreshold;
   };
 
-  readAxis(0x30, state.left, state.right);
-  readAxis(0x31, state.up, state.down);
+  readAxis(0x30, pad.xAxis, state.left, state.right);
+  readAxis(0x31, pad.yAxis, state.up, state.down);
 
-  if(getUsageInfo(pad, 0x39, logicalMin, logicalMax, bitSize)
+  if(pad.hat.valid
   && HidP_GetUsageValue(HidP_Input, 0x01, 0, 0x39, &value, preparsed, (PCHAR)report, reportLength) == HIDP_STATUS_SUCCESS) {
     LONG signedValue = value;
-    if(logicalMin < 0 && bitSize > 0 && (value & (1ul << (bitSize - 1)))) {
-      signedValue = value | (~0ul << bitSize);
+    if(pad.hat.logicalMin < 0 && pad.hat.bitSize > 0 && pad.hat.bitSize < 32 && (value & (1ul << (pad.hat.bitSize - 1)))) {
+      signedValue = value | (~0ul << pad.hat.bitSize);
     }
 
-    if(signedValue >= logicalMin && signedValue <= logicalMax) {
-      updateRawHidDPad(state, signedValue - logicalMin);
+    if(signedValue >= pad.hat.logicalMin && signedValue <= pad.hat.logicalMax) {
+      updateRawHidDPad(state, signedValue - pad.hat.logicalMin);
     }
   }
 
   pad.state = state;
 }
 
+auto NativeInputManager::refreshPadMasksLocked() -> void {
+  for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
+
+  uint activePort = 0;
+  for(auto& pad : _pads) {
+    if(!pad.state.attached) continue;
+    if(activePort >= _padMasks.size()) break;
+    _padMasks[activePort++].store(padToMask(pad), ::std::memory_order_release);
+  }
+}
+
+auto NativeInputManager::padToMask(const HidPad& pad) const -> uint32_t {
+  uint32_t mask = 0;
+  for(uint input = GamepadUp; input <= GamepadStart; input++) {
+    if(mapPad(pad, input)) mask |= 1u << input;
+  }
+  return mask;
+}
+
+auto NativeInputManager::keyboardMaskForKey(WORD key) const -> uint32_t {
+  switch(key) {
+  case VK_UP: return 1u << GamepadUp;
+  case VK_DOWN: return 1u << GamepadDown;
+  case VK_LEFT: return 1u << GamepadLeft;
+  case VK_RIGHT: return 1u << GamepadRight;
+  case 'Z': return 1u << GamepadB;
+  case 'X': return 1u << GamepadA;
+  case 'A': return 1u << GamepadY;
+  case 'S': return 1u << GamepadX;
+  case 'Q': return 1u << GamepadL;
+  case 'W': return 1u << GamepadR;
+  case VK_LSHIFT:
+  case VK_RSHIFT: return 1u << GamepadSelect;
+  case VK_RETURN: return 1u << GamepadStart;
+  }
+  return 0;
+}
+
 auto NativeInputManager::mapKeyboard(uint port, uint input) const -> bool {
   if(port != 0) return false;
-
-  switch(input) {
-  case GamepadUp: return keyPressed(VK_UP);
-  case GamepadDown: return keyPressed(VK_DOWN);
-  case GamepadLeft: return keyPressed(VK_LEFT);
-  case GamepadRight: return keyPressed(VK_RIGHT);
-  case GamepadB: return keyPressed('Z');
-  case GamepadA: return keyPressed('X');
-  case GamepadY: return keyPressed('A');
-  case GamepadX: return keyPressed('S');
-  case GamepadL: return keyPressed('Q');
-  case GamepadR: return keyPressed('W');
-  case GamepadSelect: return keyPressed(VK_LSHIFT) || keyPressed(VK_RSHIFT);
-  case GamepadStart: return keyPressed(VK_RETURN);
-  }
-
-  return false;
+  if(input > GamepadStart) return false;
+  return _keyboardMask.load(::std::memory_order_acquire) & (1u << input);
 }
 
 auto NativeInputManager::mapPad(const HidPad& pad, uint input) const -> bool {
@@ -447,25 +516,11 @@ auto NativeInputManager::mapPad(const HidPad& pad, uint input) const -> bool {
   return false;
 }
 
-auto NativeInputManager::keyPressed(WORD key) const -> bool {
-  return key < _keyboardState.size() && _keyboardState[key];
-}
-
 auto NativeInputManager::pollGamepad(uint port, uint input) -> int16 {
-  ::std::lock_guard<::std::mutex> lock(_stateMutex);
-
-  bool pressed = mapKeyboard(port, input);
-  uint activePort = 0;
-  for(auto& pad : _pads) {
-    if(!pad.state.attached) continue;
-    if(activePort != port) {
-      activePort++;
-      continue;
-    }
-    pressed = pressed || mapPad(pad, input);
-    break;
-  }
-
+  if(input > GamepadStart) return 0;
+  uint32_t mask = port == 0 ? _keyboardMask.load(::std::memory_order_acquire) : 0;
+  if(port < _padMasks.size()) mask |= _padMasks[port].load(::std::memory_order_acquire);
+  bool pressed = mask & (1u << input);
   return pressed ? 1 : 0;
 }
 

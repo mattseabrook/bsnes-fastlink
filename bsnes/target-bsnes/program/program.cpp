@@ -15,14 +15,51 @@
 #include "hacks.cpp"
 #include "filter.cpp"
 #include "viewport.cpp"
+
+#if defined(PLATFORM_WINDOWS)
+extern "C" __declspec(dllimport) UINT WINAPI timeBeginPeriod(UINT period);
+extern "C" __declspec(dllimport) UINT WINAPI timeEndPeriod(UINT period);
+#ifndef TIMERR_NOERROR
+#define TIMERR_NOERROR 0
+#endif
+#endif
+
 Program program;
 
+#if defined(PLATFORM_WINDOWS)
+namespace {
+bool windowsLatencyModeActive = false;
+
+auto enableWindowsLatencyMode() -> void {
+  SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+  SetProcessPriorityBoost(GetCurrentProcess(), FALSE);
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+  SetThreadPriorityBoost(GetCurrentThread(), FALSE);
+
+  if(!windowsLatencyModeActive && timeBeginPeriod(1) == TIMERR_NOERROR) {
+    windowsLatencyModeActive = true;
+  }
+}
+
+auto disableWindowsLatencyMode() -> void {
+  if(!windowsLatencyModeActive) return;
+  timeEndPeriod(1);
+  windowsLatencyModeActive = false;
+}
+}
+#endif
+
 auto Program::create() -> void {
+  #if defined(PLATFORM_WINDOWS)
+  enableWindowsLatencyMode();
+  #endif
+
   Emulator::platform = this;
 
   presentation.create();
   presentation.setVisible();
   presentation.viewport.setFocused();
+  fastLinkRAMTraceService.start();
 
   settingsWindow.create();
   videoSettings.create();
@@ -56,7 +93,11 @@ auto Program::create() -> void {
     ).setAlignment(*presentation).information();
 
     if(crashComponent == "Video") {
+      #if defined(PLATFORM_WINDOWS)
+      settings.video.driver = NativeVideoDriverName;
+      #else
       settings.video.driver = "None";
+      #endif
       if(settings.audio.driver == "None") settings.audio.driver = ruby::Audio::optimalDriver();
       #if defined(PLATFORM_WINDOWS)
       if(settings.input.driver == "None") settings.input.driver = NativeInputDriverName;
@@ -136,6 +177,7 @@ auto Program::main() -> void {
   rewindRun();
 
   emulator->run();
+  fastLinkRAMTraceService.publishFrame();
 
   if(emulatorSettings.autoSaveMemory.checked()) {
     auto currentTime = chrono::timestamp();
@@ -157,6 +199,7 @@ auto Program::quit() -> void {
   settings.general.crashed = false;
   settings.general.crashComponent = "";
 
+  fastLinkRAMTraceService.stop();
   unload();
   #if defined(PLATFORM_WINDOWS)
   nativeInputManager.terminate();
@@ -167,6 +210,9 @@ auto Program::quit() -> void {
   video.reset();
   audio.reset();
   input.reset();
+  #if defined(PLATFORM_WINDOWS)
+  disableWindowsLatencyMode();
+  #endif
 
   #if defined(PLATFORM_WINDOWS)
   //in rare cases, when Application::exit() calls exit(0), a crash will occur.

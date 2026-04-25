@@ -1,5 +1,35 @@
 auto Program::load() -> void {
+  if(loading) return;
+  loading = true;
+  struct LoadGuard {
+    bool& loading;
+    ~LoadGuard() { loading = false; }
+  } loadGuard{loading};
+
+  auto clearGameSlots = [&] {
+    superFamicom = {};
+    gameBoy = {};
+    bsMemory = {};
+    sufamiTurboA = {};
+    sufamiTurboB = {};
+  };
+
+  if(!gameQueue) {
+    BrowserDialog dialog;
+    dialog.setAlignment(*presentation);
+    dialog.setOptions({"Auto", "NTSC", "PAL"});
+    dialog.setTitle("Load SNES ROM");
+    dialog.setPath(path("Games", settings.path.recent.superFamicom));
+    dialog.setFilters({string{"SNES ROMs|*.sfc:*.smc:*.zip:*.7z:*.SFC:*.SMC:*.ZIP:*.7Z:*.Sfc:*.Smc:*.Zip"}, string{"All Files|*"}});
+    auto location = openGame(dialog);
+    if(!inode::exists(location)) return;
+    gameQueue.append({dialog.option(), ";", location});
+  }
+
+  auto lock = acquire();
   unload();
+  clearGameSlots();
+  screenshot = {};
 
   emulator->configure("System/Serialization/Method", settings.emulator.serialization.method);
   emulator->configure("Hacks/Hotfixes", settings.emulator.hack.hotfixes);
@@ -20,7 +50,12 @@ auto Program::load() -> void {
   emulator->configure("Hacks/Coprocessor/DelayedSync", settings.emulator.hack.coprocessor.delayedSync);
   emulator->configure("Hacks/Coprocessor/PreferHLE", settings.emulator.hack.coprocessor.preferHLE);
   emulator->configure("Hacks/SuperFX/Overclock", settings.emulator.hack.superfx.overclock);
-  if(!emulator->load()) return;
+  if(!emulator->load()) {
+    gameQueue = {};
+    screenshot = {};
+    clearGameSlots();
+    return showMessage("Game loading failed");
+  }
 
   gameQueue = {};
   screenshot = {};
@@ -35,6 +70,8 @@ auto Program::load() -> void {
     ).setAlignment(*presentation).question({"Always", "Yes", "No"});
     if(response == "No") {
       emulator->unload();
+      screenshot = {};
+      clearGameSlots();
       return showMessage("Game loading cancelled");
     }
     if(response == "Always") {
@@ -82,7 +119,8 @@ auto Program::load() -> void {
 }
 
 auto Program::loadFile(string location) -> vector<uint8_t> {
-  if(Location::suffix(location).downcase() == ".zip") {
+  auto suffix = Location::suffix(location).downcase();
+  if(suffix == ".zip") {
     Decode::ZIP archive;
     if(archive.open(location)) {
       for(auto& file : archive.file) {
@@ -93,7 +131,7 @@ auto Program::loadFile(string location) -> vector<uint8_t> {
       }
     }
     return {};
-  } else if(Location::suffix(location).downcase() == ".7z") {
+  } else if(suffix == ".7z") {
     return LZMA::extract(location);
   } else {
     return file::read(location);
@@ -318,6 +356,7 @@ auto Program::power() -> void {
 
 auto Program::unload() -> void {
   if(!emulator->loaded()) return;
+  fastLinkRAMTraceService.clearSnapshot();
   //todo: video.clear() is not working on macOS/OpenGL 3.2
   if(auto [output, length] = video.acquire(1, 1); output) {
     *output = 0;
@@ -332,6 +371,7 @@ auto Program::unload() -> void {
   if(emulatorSettings.autoSaveStateOnUnload.checked()) {
     saveUndoState();
   }
+  screenshot = {};
   emulator->unload();
   showMessage("Game unloaded");
   superFamicom = {};

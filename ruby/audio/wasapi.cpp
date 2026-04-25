@@ -76,8 +76,9 @@ struct AudioWASAPI : AudioDriver {
     self.queue.write++;
     self.queue.count++;
 
-    if(self.queue.count >= self.bufferSize) {
-      if(WaitForSingleObject(self.eventHandle, self.blocking ? INFINITE : 0) == WAIT_OBJECT_0) {
+    auto quantum = max(16u, self.bufferSize / 8);
+    if(self.queue.count >= (self.blocking ? self.bufferSize : quantum)) {
+      if(WaitForSingleObject(self.eventHandle, self.blocking ? INFINITE : 0) == WAIT_OBJECT_0 || !self.blocking) {
         write();
       }
     }
@@ -223,6 +224,7 @@ private:
       available = self.bufferSize - padding;
     }
     uint32_t length = min(available, self.queue.count);
+    if(length == 0) return;
 
     uint8_t* buffer = nullptr;
     if(self.renderClient->GetBuffer(length, &buffer) == S_OK) {

@@ -54,7 +54,11 @@ auto Settings::save() -> void {
 auto Settings::process(bool load) -> void {
   if(load) {
     //initialize non-static default settings
+    #if defined(PLATFORM_WINDOWS)
+    video.driver = NativeVideoDriverName;
+    #else
     video.driver = ruby::Video::optimalDriver();
+    #endif
     audio.driver = ruby::Audio::optimalDriver();
     #if defined(PLATFORM_WINDOWS)
     input.driver = NativeInputDriverName;
@@ -172,12 +176,21 @@ auto Settings::process(bool load) -> void {
   bind(text,    "General/Window/Monitor",    general.window.monitor);
 
   if(load) {
+    #if defined(PLATFORM_WINDOWS)
+    if(video.driver != NativeVideoDriverName) {
+      video.driver = NativeVideoDriverName;
+    }
+    if(video.shader != "None") {
+      video.shader = "None";
+    }
+    #else
     if(!ruby::Video::hasDriver(video.driver)) {
       video.driver = ruby::Video::optimalDriver();
     }
     if(video.driver == "Direct3D 9.0" || video.driver == "DirectDraw 7.0" || video.driver == "GDI") {
       video.driver = ruby::Video::optimalDriver();
     }
+    #endif
     if(!ruby::Audio::hasDriver(audio.driver)) {
       audio.driver = ruby::Audio::optimalDriver();
     }
@@ -189,10 +202,12 @@ auto Settings::process(bool load) -> void {
     //Older crash recovery builds disabled every driver after a video failure.
     //Recover audio/input automatically when that exact all-None state is encountered.
     if(video.driver == "None" && audio.driver == "None" && input.driver == "None" && !general.crashComponent) {
+      video.driver = NativeVideoDriverName;
       audio.driver = ruby::Audio::optimalDriver();
       input.driver = NativeInputDriverName;
       general.crashComponent = "Video";
     }
+    if(!video.driver || video.driver == "None") video.driver = NativeVideoDriverName;
     if(!input.driver || input.driver == "None") input.driver = NativeInputDriverName;
     general.nativeFileDialogs = true;
     #endif

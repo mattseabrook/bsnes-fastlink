@@ -24,7 +24,7 @@ namespace {
 auto Presentation::create() -> void {
   setBackgroundColor({0, 0, 0});
 
-  systemMenu.setText(tr("System"));
+  systemMenu.setText(tr("File"));
   loadGame.setIcon(Icon::Action::Open).setText({tr("Load Game"), " ..."}).onActivate([&] {
     program.load();
   });
@@ -378,8 +378,13 @@ auto Presentation::restoreWindowGeometry() -> bool {
   auto y = settings.general.window.y;
   auto monitorName = settings.general.window.monitor;
 
+  #if defined(PLATFORM_WINDOWS)
+  auto monitors = NativeVideoManager::hasMonitors();
+  NativeVideoManager::Monitor fallbackMonitor;
+  #else
   auto monitors = ruby::Video::hasMonitors();
   ruby::Video::Monitor fallbackMonitor;
+  #endif
   bool haveFallbackMonitor = false;
   for(auto& monitor : monitors) {
     if(monitor.primary && !haveFallbackMonitor) {
@@ -449,7 +454,12 @@ auto Presentation::locateCurrentMonitor(Geometry geometry) const -> string {
 
   string bestMonitor = "Primary";
   uint64_t bestDistance = ~0ull;
-  for(auto& monitor : ruby::Video::hasMonitors()) {
+  #if defined(PLATFORM_WINDOWS)
+  auto monitors = NativeVideoManager::hasMonitors();
+  #else
+  auto monitors = ruby::Video::hasMonitors();
+  #endif
+  for(auto& monitor : monitors) {
     if(centerX >= monitor.x && centerX < monitor.x + monitor.width && centerY >= monitor.y && centerY < monitor.y + monitor.height) {
       return monitor.name;
     }

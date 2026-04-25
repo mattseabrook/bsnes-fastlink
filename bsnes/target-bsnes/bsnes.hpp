@@ -1,6 +1,11 @@
 #include <ruby/ruby.hpp>
 using namespace ruby;
+#if defined(PLATFORM_WINDOWS)
+struct NativeVideoManager;
+extern NativeVideoManager video;
+#else
 extern Video video;
+#endif
 extern Audio audio;
 extern Input input;
 
@@ -20,6 +25,8 @@ extern unique_pointer<Emulator::Interface> emulator;
 #include <nall/encode/zip.hpp>
 #include <nall/hash/crc16.hpp>
 
+#include "video/video.hpp"
+#include "fastlink/ram-trace.hpp"
 #include "program/program.hpp"
 #include "input/input.hpp"
 #include "presentation/presentation.hpp"

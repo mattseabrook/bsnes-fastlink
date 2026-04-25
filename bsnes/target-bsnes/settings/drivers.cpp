@@ -3,11 +3,16 @@ auto DriverSettings::create() -> void {
   setVisible(false);
 
   videoLabel.setText("Video").setFont(Font().setBold());
+  #if defined(PLATFORM_WINDOWS)
+  videoDriverLabel.setText("Backend:");
+  videoDriverUpdate.setText("Native").setEnabled(false);
+  #else
   videoDriverLabel.setText("Driver:");
   videoDriverOption.onChange([&] {
     videoDriverUpdate.setText(videoDriverOption.selected().text() != video.driver() ? "Change" : "Reload");
   });
   videoDriverUpdate.setText("Change").onActivate([&] { videoDriverChange(); });
+  #endif
   videoMonitorLabel.setText("Fullscreen monitor:").setToolTip(
     "Sets which monitor video is sent to in fullscreen mode."
   );
@@ -34,6 +39,13 @@ auto DriverSettings::create() -> void {
     program.updateVideoBlocking();
     presentation.speedMenu.setEnabled(!videoBlockingToggle.checked() && audioBlockingToggle.checked());
   });
+  #if defined(PLATFORM_WINDOWS)
+  videoFlushToggle.setText("GPU sync").setToolTip(
+    "Waits for the Vulkan queue to drain after present.\n"
+    "This can reduce queued frames at the cost of GPU headroom.\n\n"
+    "You should disable this option unless you find it necessary."
+  ).onToggle([&] {
+  #else
   videoFlushToggle.setText("GPU sync").setToolTip({
     "(OpenGL driver only)\n\n"
     "Causes the GPU to wait until frames are fully rendered.\n"
@@ -41,6 +53,7 @@ auto DriverSettings::create() -> void {
     "However, it incurs a roughly 20% performance penalty.\n\n"
     "You should disable this option unless you find it necessary."
   }).onToggle([&] {
+  #endif
     settings.video.flush = videoFlushToggle.checked();
     program.updateVideoFlush();
   });
@@ -156,6 +169,21 @@ auto DriverSettings::create() -> void {
 //
 
 auto DriverSettings::videoDriverChanged() -> void {
+  #if defined(PLATFORM_WINDOWS)
+  videoDriverOption.reset();
+  ComboButtonItem item{&videoDriverOption};
+  item.setText(NativeVideoDriverName).setSelected();
+  videoDriverOption.setEnabled(false);
+  videoDriverActive.setText({"Active backend: ", NativeVideoDriverName});
+  videoMonitorChanged();
+  videoFormatChanged();
+  videoExclusiveToggle.setChecked(video.exclusive()).setEnabled(video.hasExclusive());
+  videoBlockingToggle.setChecked(video.blocking()).setEnabled(video.hasBlocking());
+  videoFlushToggle.setChecked(video.flush()).setEnabled(video.hasFlush());
+  setGeometry(geometry());
+  return;
+  #endif
+
   videoDriverOption.reset();
   for(auto& driver : video.hasDrivers()) {
     ComboButtonItem item{&videoDriverOption};
@@ -173,6 +201,10 @@ auto DriverSettings::videoDriverChanged() -> void {
 }
 
 auto DriverSettings::videoDriverChange() -> void {
+  #if defined(PLATFORM_WINDOWS)
+  return;
+  #endif
+
   auto item = videoDriverOption.selected();
   settings.video.driver = item.text();
   if(!emulator->loaded() || item.text() == "None" || MessageDialog(
@@ -195,7 +227,11 @@ auto DriverSettings::videoDriverChange() -> void {
 
 auto DriverSettings::videoMonitorChanged() -> void {
   videoMonitorOption.reset();
+  #if defined(PLATFORM_WINDOWS)
+  for(auto& monitor : NativeVideoManager::hasMonitors()) {
+  #else
   for(auto& monitor : Video::hasMonitors()) {
+  #endif
     ComboButtonItem item{&videoMonitorOption};
     item.setText(monitor.name);
     if(monitor.name == video.monitor()) item.setSelected();

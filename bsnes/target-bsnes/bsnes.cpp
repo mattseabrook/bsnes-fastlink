@@ -1,6 +1,10 @@
 #include "bsnes.hpp"
 #include <sfc/interface/interface.hpp>
+#if defined(PLATFORM_WINDOWS)
+NativeVideoManager video;
+#else
 Video video;
+#endif
 Audio audio;
 Input input;
 unique_pointer<Emulator::Interface> emulator;

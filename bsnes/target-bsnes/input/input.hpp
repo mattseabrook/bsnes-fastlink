@@ -153,6 +153,13 @@ private:
     bool buttons[32] = {};
   };
 
+  struct HidUsageValue {
+    bool valid = false;
+    LONG logicalMin = 0;
+    LONG logicalMax = 0;
+    USHORT bitSize = 0;
+  };
+
   struct HidPad {
     HANDLE device = nullptr;
     USHORT vendorID = 0;
@@ -161,6 +168,10 @@ private:
     HIDP_CAPS caps = {};
     HidPadState state;
     ::std::vector<USHORT> buttonDataIndices;
+    ::std::vector<HIDP_DATA> dataList;
+    HidUsageValue xAxis;
+    HidUsageValue yAxis;
+    HidUsageValue hat;
   };
 
   auto threadMain() -> void;
@@ -172,12 +183,14 @@ private:
   auto handleRawKeyboard(const RAWKEYBOARD& keyboard) -> void;
   auto handleRawHid(HANDLE device, const RAWHID& hid) -> void;
   auto initializeRawHidPad(HANDLE device, HidPad& pad) -> bool;
-  auto getUsageInfo(const HidPad& pad, USAGE usage, LONG& logicalMin, LONG& logicalMax, USHORT& bitSize) const -> bool;
+  auto getUsageInfo(const HidPad& pad, USAGE usage) const -> HidUsageValue;
   auto updateRawHidDPad(HidPadState& state, ULONG hat) -> void;
   auto updateRawHidPadReport(HidPad& pad, const BYTE* report, ULONG reportLength) -> void;
+  auto refreshPadMasksLocked() -> void;
+  auto padToMask(const HidPad& pad) const -> uint32_t;
+  auto keyboardMaskForKey(WORD key) const -> uint32_t;
   auto mapKeyboard(uint port, uint input) const -> bool;
   auto mapPad(const HidPad& pad, uint input) const -> bool;
-  auto keyPressed(WORD key) const -> bool;
 
   static auto resolveVirtualKey(const RAWKEYBOARD& keyboard) -> WORD;
   static auto isXInputDevice(HANDLE device) -> bool;
@@ -188,7 +201,10 @@ private:
   ::std::mutex _readyMutex;
   ::std::condition_variable _readyCondition;
   ::std::vector<HidPad> _pads;
+  ::std::vector<HANDLE> _ignoredDevices;
   ::std::array<uint8_t, 256> _keyboardState = {};
+  ::std::atomic<uint32_t> _keyboardMask{0};
+  ::std::array<::std::atomic<uint32_t>, 4> _padMasks = {};
   HWND _window = nullptr;
   bool _running = false;
   bool _readySignal = false;

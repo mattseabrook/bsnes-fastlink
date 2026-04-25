@@ -189,6 +189,7 @@ public:
   } screenshot;
 
   bool frameAdvanceLock = false;
+  bool loading = false;
 
   uint64 autoSaveTime;
 

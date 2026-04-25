@@ -22,6 +22,38 @@ auto ProgramVideoTrace(const char* format, ...) -> void {
 #endif
 
 auto Program::updateVideoDriver(Window parent) -> void {
+  #if defined(PLATFORM_WINDOWS)
+  settings.video.driver = NativeVideoDriverName;
+
+  video.setContext(presentation.viewport.handle());
+  video.create(settings.video.driver);
+
+  updateVideoExclusive();
+  updateVideoBlocking();
+  updateVideoFlush();
+  updateVideoMonitor();
+  updateVideoFormat();
+  updateVideoShader();
+
+  if(video.ready()) {
+    video.clear();
+  }
+
+  video.onUpdate([&](uint width, uint height) {
+    if(!emulator->loaded()) video.clear();
+  });
+
+  if(!video.ready()) {
+    MessageDialog({
+      "Error: failed to initialize [", NativeVideoDriverName, "] video backend."
+    }).setAlignment(parent).error();
+    return;
+  }
+
+  presentation.updateShaders();
+  return;
+  #endif
+
   auto changed = (bool)video;
   ProgramVideoTrace("updateVideoDriver: requested=%s active=%s changed=%d viewport=%p\n", (const char*)settings.video.driver, (const char*)video.driver(), changed, (void*)presentation.viewport.handle());
 
@@ -163,6 +195,13 @@ auto Program::updateVideoEffects() -> void {
 }
 
 auto Program::toggleVideoFullScreen() -> void {
+  #if defined(PLATFORM_WINDOWS)
+  if(!video.hasFullScreen()) {
+    toggleVideoPseudoFullScreen();
+    return;
+  }
+  #endif
+
   if(!video.hasFullScreen()) return;
   if(presentation.fullScreen()) return;
 

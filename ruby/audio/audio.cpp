@@ -42,6 +42,10 @@
   #include <ruby/audio/xaudio2.cpp>
 #endif
 
+#if defined(PLATFORM_WINDOWS)
+  #include <avrt.h>
+#endif
+
 namespace ruby {
 
 auto Audio::setExclusive(bool exclusive) -> bool {
@@ -198,6 +202,14 @@ auto Audio::stopWorker() -> void {
 }
 
 auto Audio::_workerMain() -> void {
+  #if defined(PLATFORM_WINDOWS)
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+  SetThreadPriorityBoost(GetCurrentThread(), FALSE);
+  DWORD taskIndex = 0;
+  HANDLE taskHandle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+  if(taskHandle) AvSetMmThreadPriority(taskHandle, AVRT_PRIORITY_HIGH);
+  #endif
+
   while(_workerRunning) {
     uint read = _ringRead.load(::std::memory_order_relaxed);
     uint write = _ringWrite.load(::std::memory_order_acquire);
@@ -224,6 +236,10 @@ auto Audio::_workerMain() -> void {
       instance->output(samples);
     }
   }
+
+  #if defined(PLATFORM_WINDOWS)
+  if(taskHandle) AvRevertMmThreadCharacteristics(taskHandle);
+  #endif
 }
 
 //

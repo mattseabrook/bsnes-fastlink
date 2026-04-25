@@ -7,7 +7,7 @@ include $(hiro.path)/GNUmakefile
 ruby.path := ../ruby
 include $(ruby.path)/GNUmakefile
 
-objects += ui-bsnes ui-program ui-input ui-presentation
+objects += ui-bsnes ui-program ui-input ui-presentation ui-fastlink-ramtrace
 objects += ui-settings ui-tools ui-resource
 objects := $(objects:%=obj/%.o)
 
@@ -15,6 +15,7 @@ obj/ui-bsnes.o: $(ui)/bsnes.cpp
 obj/ui-program.o: $(ui)/program/program.cpp
 obj/ui-input.o: $(ui)/input/input.cpp
 obj/ui-presentation.o: $(ui)/presentation/presentation.cpp
+obj/ui-fastlink-ramtrace.o: $(ui)/fastlink/ram-trace.cpp
 obj/ui-settings.o: $(ui)/settings/settings.cpp
 obj/ui-tools.o: $(ui)/tools/tools.cpp
 obj/ui-resource.o: $(ui)/resource/resource.cpp

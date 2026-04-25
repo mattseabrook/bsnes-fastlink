@@ -44,6 +44,7 @@ WINSDK_BASE="${WINSDK_BASE:-/opt/winsdk}"
 LIBS_PREFIX="${LIBS_PREFIX:-/opt/windows-libs}"
 ZLIB_DIR="${ZLIB_DIR:-$LIBS_PREFIX/zlib}"
 LIBPNG_DIR="${LIBPNG_DIR:-$LIBS_PREFIX/libpng}"
+VULKAN_SDK_ROOT="${VULKAN_SDK_ROOT:-/opt/VulkanSDK/1.4.313.2}"
 CL="${CL:-clang-cl}"
 LINKER="${LINKER:-lld-link}"
 JOBS="${JOBS:-$(nproc)}"
@@ -129,31 +130,12 @@ setup_flags() {
     *) die "Unknown CONFIG: $CONFIG" ;;
   esac
 
-  # Vulkan headers: copy from system to avoid pulling in Linux glibc
-  local vulkan_inc="$BUILD_DIR/vulkan-include"
-  if [[ -d /usr/include/vulkan ]]; then
-    mkdir -p "$vulkan_inc"
-    cp -ru /usr/include/vulkan "$vulkan_inc/" 2>/dev/null || true
-    if [[ -d /usr/include/vk_video ]]; then
-      cp -ru /usr/include/vk_video "$vulkan_inc/" 2>/dev/null || true
-    fi
-  fi
-
-  # Regenerate vulkan-1.lib from the current source references.
-  if command -v llvm-dlltool >/dev/null 2>&1; then
-    local vk_def="$BUILD_DIR/vulkan-1.def"
-    echo "LIBRARY vulkan-1.dll" > "$vk_def"
-    echo "EXPORTS" >> "$vk_def"
-    grep -roh 'vk[A-Z][0-9A-Za-z]*' ruby/video/vulkan.cpp 2>/dev/null | sort -u | grep -v 'vkCreateXlib' >> "$vk_def"
-    llvm-dlltool -m i386:x86-64 -d "$vk_def" -l "$BUILD_DIR/vulkan-1.lib"
-  fi
-
   # Include paths
   INC=(
     "-I." "-I./bsnes"
     "-I$ZLIB_DIR/include"
     "-I$LIBPNG_DIR/include"
-    "-I$vulkan_inc"
+    "-I$VULKAN_INCLUDE_DIR"
   )
 
   # MSVC SDK includes
@@ -174,9 +156,6 @@ setup_flags() {
     # SameBoy
     "-DGB_INTERNAL" "-DGB_DISABLE_DEBUGGER" "-DGB_DISABLE_CHEATS"
     "-DGB_VERSION=\"$GB_VERSION\""
-    # Ruby video driver
-    "-DVIDEO_VULKAN"
-    "-DVK_USE_PLATFORM_WIN32_KHR"
     # Ruby audio drivers
     "-DAUDIO_WASAPI"
     "-DAUDIO_XAUDIO2"
@@ -219,13 +198,14 @@ setup_flags() {
     "/libpath:$CRT_LIB/x86_64"
     "/libpath:$LIB_UCRT"
     "/libpath:$LIB_UM"
+    "/libpath:$VULKAN_LIB_DIR"
     "kernel32.lib" "user32.lib" "gdi32.lib" "comdlg32.lib" "advapi32.lib"
     "shell32.lib" "ole32.lib" "oleaut32.lib" "winmm.lib" "shlwapi.lib"
     "dxguid.lib" "dsound.lib"
+    "vulkan-1.lib"
     "opengl32.lib" "hid.lib"
     "comctl32.lib" "dwmapi.lib" "ws2_32.lib" "avrt.lib"
     "uxtheme.lib" "msimg32.lib"
-    "$BUILD_DIR/vulkan-1.lib"
     "$ZLIB_DIR/lib/zlib.lib"
     "$LIBPNG_DIR/lib/libpng.lib"
   )
@@ -302,6 +282,8 @@ compile_objects() {
 
   # --- Target bsnes (UI) ---
   echo "$B/target-bsnes/bsnes.cpp|$objdir/target-bsnes.obj|cpp" >> "$manifest"
+  echo "$B/target-bsnes/video/native-vulkan.cpp|$objdir/target-video.obj|cpp" >> "$manifest"
+  echo "$B/target-bsnes/fastlink/ram-trace.cpp|$objdir/target-fastlink-ramtrace.obj|cpp" >> "$manifest"
   echo "$B/target-bsnes/program/program.cpp|$objdir/target-program.obj|cpp" >> "$manifest"
   echo "$B/target-bsnes/input/input.cpp|$objdir/target-input.obj|cpp" >> "$manifest"
   echo "$B/target-bsnes/presentation/presentation.cpp|$objdir/target-presentation.obj|cpp" >> "$manifest"
@@ -445,7 +427,18 @@ main() {
   # Verify deps
   [[ -f "$ZLIB_DIR/lib/zlib.lib" ]] || die "zlib not found at $ZLIB_DIR (run build_windows_libs.sh first)"
   [[ -f "$LIBPNG_DIR/lib/libpng.lib" ]] || die "libpng not found at $LIBPNG_DIR (run build_windows_libs.sh first)"
+  if [[ -d "$VULKAN_SDK_ROOT/Include" && -f "$VULKAN_SDK_ROOT/Lib/vulkan-1.lib" ]]; then
+    VULKAN_INCLUDE_DIR="$VULKAN_SDK_ROOT/Include"
+    VULKAN_LIB_DIR="$VULKAN_SDK_ROOT/Lib"
+  elif [[ -d "$BUILD_DIR/vulkan-include" && -f "$BUILD_DIR/vulkan-1.lib" ]]; then
+    VULKAN_INCLUDE_DIR="$BUILD_DIR/vulkan-include"
+    VULKAN_LIB_DIR="$BUILD_DIR"
+  else
+    die "Vulkan SDK not found (set VULKAN_SDK_ROOT or provide $BUILD_DIR/vulkan-include and $BUILD_DIR/vulkan-1.lib)"
+  fi
   ok "Static dependencies found"
+  info "Vulkan include: $VULKAN_INCLUDE_DIR"
+  info "Vulkan libs: $VULKAN_LIB_DIR"
 
   # Setup compiler/linker config
   setup_flags
