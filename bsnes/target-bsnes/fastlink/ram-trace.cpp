@@ -20,18 +20,22 @@ namespace {
 using SocketHandle = SOCKET;
 
 constexpr SocketHandle InvalidSocket = INVALID_SOCKET;
-constexpr uint32_t RequestWaitMilliseconds = 18;
+constexpr uint32_t RequestWaitMilliseconds = 2;
 constexpr char HTTPHeader[] =
   "HTTP/1.1 200 OK\r\n"
   "Content-Type: application/octet-stream\r\n"
   "Content-Length: 131072\r\n"
+  "Cache-Control: no-store\r\n"
   "Connection: close\r\n"
   "Access-Control-Allow-Origin: *\r\n"
+  "Access-Control-Allow-Private-Network: true\r\n"
   "\r\n";
 constexpr char HTTPOptionsHeader[] =
   "HTTP/1.1 204 No Content\r\n"
+  "Cache-Control: no-store\r\n"
   "Connection: close\r\n"
   "Access-Control-Allow-Origin: *\r\n"
+  "Access-Control-Allow-Private-Network: true\r\n"
   "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
   "Access-Control-Allow-Headers: Content-Type\r\n"
   "\r\n";
@@ -70,6 +74,7 @@ auto receiveRequest(SocketHandle socket, char* request, uint32_t capacity) -> ui
   }
   return used;
 }
+
 }
 #endif
 
@@ -86,8 +91,12 @@ FastLinkRAMTraceService::~FastLinkRAMTraceService() {
 auto FastLinkRAMTraceService::start() -> void {
 #if defined(PLATFORM_WINDOWS)
   bool expected = false;
-  if(!_running.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return;
+  if(!_running.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+    fastLinkDebug("RAMTrace::start ignored: already running");
+    return;
+  }
 
+  fastLinkDebug("RAMTrace::start port=%u", Port);
   clearSnapshot();
   _thread = std::thread([this] { threadMain(); });
 #endif
@@ -95,16 +104,19 @@ auto FastLinkRAMTraceService::start() -> void {
 
 auto FastLinkRAMTraceService::stop() -> void {
 #if defined(PLATFORM_WINDOWS)
+  fastLinkDebug("RAMTrace::stop begin running=%d", _running.load(std::memory_order_acquire));
   _running.store(false, std::memory_order_release);
   _snapshotRequested.store(false, std::memory_order_release);
   _condition.notify_all();
 
   if(_thread.joinable()) _thread.join();
+  fastLinkDebug("RAMTrace::stop done");
 #endif
 }
 
 auto FastLinkRAMTraceService::clearSnapshot() -> void {
 #if defined(PLATFORM_WINDOWS)
+  fastLinkDebug("RAMTrace::clearSnapshot");
   static const std::array<uint8_t, WRAMSize> empty = {};
   publish(empty.data(), WRAMSize);
 #endif
@@ -114,6 +126,9 @@ auto FastLinkRAMTraceService::publishFrame() -> void {
 #if defined(PLATFORM_WINDOWS)
   if(!_running.load(std::memory_order_relaxed)) return;
   if(!_snapshotRequested.exchange(false, std::memory_order_acq_rel)) return;
+  static uint publishTraceCount = 0;
+  bool tracePublish = publishTraceCount++ < 40;
+  if(tracePublish) fastLinkDebug("RAMTrace::publishFrame requested loaded=%d", emulator && emulator->loaded());
 
   if(!emulator || !emulator->loaded()) {
     clearSnapshot();
@@ -189,17 +204,20 @@ auto FastLinkRAMTraceService::copyActiveSnapshot(uint8_t* output, uint32_t capac
 
 auto FastLinkRAMTraceService::threadMain() -> void {
 #if defined(PLATFORM_WINDOWS)
+  fastLinkDebug("RAMTrace::thread begin");
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
   SetThreadPriorityBoost(GetCurrentThread(), FALSE);
 
   WSADATA wsaData = {};
   if(WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+    fastLinkDebug("RAMTrace::thread WSAStartup failed");
     _running.store(false, std::memory_order_release);
     return;
   }
 
   SocketHandle listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if(listenSocket == InvalidSocket) {
+    fastLinkDebug("RAMTrace::thread socket failed error=%d", WSAGetLastError());
     WSACleanup();
     _running.store(false, std::memory_order_release);
     return;
@@ -215,14 +233,17 @@ auto FastLinkRAMTraceService::threadMain() -> void {
 
   if(bind(listenSocket, (sockaddr*)&address, sizeof(address)) == SOCKET_ERROR
   || listen(listenSocket, 8) == SOCKET_ERROR) {
+    fastLinkDebug("RAMTrace::thread bind/listen failed port=%u error=%d", Port, WSAGetLastError());
     closeSocket(listenSocket);
     WSACleanup();
     _running.store(false, std::memory_order_release);
     return;
   }
+  fastLinkDebug("RAMTrace::thread listening port=%u", Port);
 
   std::array<uint8_t, WRAMSize> sendBuffer = {};
   std::array<char, 1024> request = {};
+  uint requestTraceCount = 0;
 
   while(_running.load(std::memory_order_acquire)) {
     fd_set readSet = {};
@@ -242,6 +263,8 @@ auto FastLinkRAMTraceService::threadMain() -> void {
     request.fill(0);
     auto requestSize = receiveRequest(client, request.data(), (uint32_t)request.size());
     bool isOptions = requestSize >= 7 && std::memcmp(request.data(), "OPTIONS", 7) == 0;
+    bool traceRequest = requestTraceCount++ < 40;
+    if(traceRequest) fastLinkDebug("RAMTrace::thread request size=%u options=%d", requestSize, isOptions);
 
     if(isOptions) {
       sendAll(client, HTTPOptionsHeader, sizeof(HTTPOptionsHeader) - 1);
@@ -251,6 +274,7 @@ auto FastLinkRAMTraceService::threadMain() -> void {
       copyActiveSnapshot(sendBuffer.data(), (uint32_t)sendBuffer.size());
       sendAll(client, HTTPHeader, sizeof(HTTPHeader) - 1);
       sendAll(client, (const char*)sendBuffer.data(), (uint32_t)sendBuffer.size());
+      if(traceRequest) fastLinkDebug("RAMTrace::thread served snapshot bytes=%u", (uint)sendBuffer.size());
     }
 
     shutdown(client, SD_SEND);
@@ -261,5 +285,6 @@ auto FastLinkRAMTraceService::threadMain() -> void {
   WSACleanup();
   _running.store(false, std::memory_order_release);
   _condition.notify_all();
+  fastLinkDebug("RAMTrace::thread exit");
 #endif
 }

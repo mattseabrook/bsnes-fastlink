@@ -48,6 +48,28 @@ auto isRetroUSBController(uint16_t vendorID, uint16_t productID) -> bool {
 auto buttonPressed(const bool (&buttons)[MaximumRawButtons], int index) -> bool {
   return index >= 0 && index < (int)MaximumRawButtons ? buttons[index] : false;
 }
+
+auto applyNativeInputThreadAffinity() -> void {
+  int processor = settings.fastLink.inputThreadAffinity;
+  if(processor == -1) return;
+
+  DWORD_PTR processMask = 0;
+  DWORD_PTR systemMask = 0;
+  if(!GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) || !processMask) return;
+
+  int target = processor;
+  if(target < 0) {
+    target = 0;
+    for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
+      if(processMask & ((DWORD_PTR)1 << index)) target = index;
+    }
+  }
+
+  DWORD_PTR mask = (DWORD_PTR)1 << target;
+  if(!(processMask & mask)) return;
+  SetThreadAffinityMask(GetCurrentThread(), mask);
+  SetThreadIdealProcessor(GetCurrentThread(), target);
+}
 }
 
 NativeInputManager nativeInputManager;
@@ -98,6 +120,7 @@ auto NativeInputManager::terminate() -> void {
 auto NativeInputManager::threadMain() -> void {
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
   SetThreadPriorityBoost(GetCurrentThread(), FALSE);
+  applyNativeInputThreadAffinity();
   DWORD taskIndex = 0;
   HANDLE taskHandle = AvSetMmThreadCharacteristicsW(L"Games", &taskIndex);
   if(taskHandle) AvSetMmThreadPriority(taskHandle, AVRT_PRIORITY_HIGH);

@@ -78,6 +78,8 @@ auto Settings::process(bool load) -> void {
   bind(boolean, "Video/Exclusive", video.exclusive);
   bind(boolean, "Video/Blocking",  video.blocking);
   bind(boolean, "Video/Flush",     video.flush);
+  bind(text,    "Video/PresentMode", video.presentMode);
+  bind(natural, "Video/SwapchainImages", video.swapchainImages);
   bind(text,    "Video/Monitor",   video.monitor);
   bind(text,    "Video/Format",    video.format);
   bind(text,    "Video/Shader",    video.shader);
@@ -94,6 +96,7 @@ auto Settings::process(bool load) -> void {
   bind(boolean, "Video/Overscan",         video.overscan);
   bind(boolean, "Video/Blur",             video.blur);
   bind(text,    "Video/Filter",           video.filter);
+  if(load) video.filter = "None";
 
   bind(text,    "Audio/Driver",    audio.driver);
   bind(boolean, "Audio/Exclusive", audio.exclusive);
@@ -132,9 +135,16 @@ auto Settings::process(bool load) -> void {
   bind(natural, "FastForward/Limiter",   fastForward.limiter);
   bind(boolean, "FastForward/Mute",      fastForward.mute);
 
-  bind(natural, "Rewind/Frequency", rewind.frequency);
-  bind(natural, "Rewind/Length",    rewind.length);
-  bind(boolean, "Rewind/Mute",      rewind.mute);
+  bind(boolean, "FastLink/RAMTraceServer", fastLink.ramTraceServer);
+  bind(natural, "FastLink/RunAhead", fastLink.runAhead);
+  bind(boolean, "FastLink/DisableSoftwareFilters", fastLink.disableSoftwareFilters);
+  bind(boolean, "FastLink/LowLatencyInactiveYield", fastLink.lowLatencyInactiveYield);
+  bind(boolean, "FastLink/SoftwareFramePacing", fastLink.softwareFramePacing);
+  bind(natural, "FastLink/InputPollMicroseconds", fastLink.inputPollMicroseconds);
+  bind(integer, "FastLink/MainThreadAffinity", fastLink.mainThreadAffinity);
+  bind(integer, "FastLink/InputThreadAffinity", fastLink.inputThreadAffinity);
+  bind(boolean, "FastLink/WindowsTimerResolution", fastLink.windowsTimerResolution);
+  bind(boolean, "FastLink/WindowsHighPerformancePower", fastLink.windowsHighPerformancePower);
 
   bind(boolean, "Emulator/WarnOnUnverifiedGames",        emulator.warnOnUnverifiedGames);
   bind(boolean, "Emulator/AutoSaveMemory/Enable",        emulator.autoSaveMemory.enable);
@@ -179,6 +189,25 @@ auto Settings::process(bool load) -> void {
     #if defined(PLATFORM_WINDOWS)
     if(video.driver != NativeVideoDriverName) {
       video.driver = NativeVideoDriverName;
+    }
+    if(video.presentMode != "Immediate" && video.presentMode != "Mailbox" && video.presentMode != "FIFO") {
+      video.presentMode = "Mailbox";
+    }
+    if(video.swapchainImages < 2) video.swapchainImages = 2;
+    if(video.swapchainImages > 4) video.swapchainImages = 4;
+    if(fastLink.runAhead > 4) fastLink.runAhead = 4;
+    if(fastLink.inputPollMicroseconds < 100) fastLink.inputPollMicroseconds = 100;
+    if(fastLink.inputPollMicroseconds > 5000) fastLink.inputPollMicroseconds = 5000;
+    if(fastLink.disableSoftwareFilters) video.filter = "None";
+    emulator.hack.ppu.fast = true;
+    if(emulator.hack.ppu.mode7.scale < 2) emulator.hack.ppu.mode7.scale = 4;
+    if(emulator.hack.ppu.mode7.scale > 8) emulator.hack.ppu.mode7.scale = 8;
+    emulator.hack.ppu.mode7.perspective = true;
+    emulator.hack.ppu.mode7.supersample = false;
+    emulator.hack.ppu.mode7.mosaic = true;
+    if(audio.driver == "WASAPI") {
+      audio.exclusive = false;
+      audio.blocking = false;
     }
     if(video.shader != "None") {
       video.shader = "None";

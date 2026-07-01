@@ -26,6 +26,7 @@ extern unique_pointer<Emulator::Interface> emulator;
 #include <nall/hash/crc16.hpp>
 
 #include "video/video.hpp"
+#include "fastlink/debug.hpp"
 #include "fastlink/ram-trace.hpp"
 #include "program/program.hpp"
 #include "input/input.hpp"

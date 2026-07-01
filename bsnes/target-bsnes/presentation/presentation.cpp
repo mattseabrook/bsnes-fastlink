@@ -30,7 +30,7 @@ auto Presentation::create() -> void {
   });
   loadRecentGame.setIcon(Icon::Action::Open).setText(tr("Load Recent Game"));
   updateRecentGames();
-  resetSystem.setIcon(Icon::Action::Refresh).setText(tr("Reset System")).setEnabled(false).onActivate([&] {
+  resetSystem.setIcon(Icon::Action::Refresh).setText(tr("Reset SNES System")).setEnabled(true).onActivate([&] {
     program.reset();
   });
   unloadGame.setIcon(Icon::Action::Remove).setText(tr("Unload Game")).setEnabled(false).onActivate([&] {
@@ -105,6 +105,7 @@ auto Presentation::create() -> void {
   if(settings.video.filter == "NTSC (S-Video)") filterNTSC_SVideo.setChecked();
   if(settings.video.filter == "NTSC (RGB)") filterNTSC_RGB.setChecked();
   shaderMenu.setIcon(Icon::Emblem::Image).setText("Shader");
+  filterMenu.setVisible(false);
   muteAudio.setText("Mute Audio").setChecked(settings.audio.mute).onToggle([&] {
     settings.audio.mute = muteAudio.checked();
     if(settings.audio.mute) {
@@ -122,6 +123,22 @@ auto Presentation::create() -> void {
     }
     if(visible()) resizeWindow();
   });
+  #if defined(PLATFORM_WINDOWS)
+  ramTraceServer.setText("Enable RAM Trace REST API").setChecked(settings.fastLink.ramTraceServer).onToggle([&] {
+    settings.fastLink.ramTraceServer = ramTraceServer.checked();
+    if(settings.fastLink.ramTraceServer) {
+      fastLinkRAMTraceService.start();
+      program.showMessage({"RAM Trace REST API enabled on localhost:", FastLinkRAMTraceService::Port});
+    } else {
+      fastLinkRAMTraceService.stop();
+      fastLinkRAMTraceService.clearSnapshot();
+      program.showMessage("RAM Trace REST API disabled");
+    }
+    settings.save();
+  });
+  #else
+  ramTraceServer.setVisible(false);
+  #endif
   videoSettings.setIcon(Icon::Device::Display).setText("Video ...").onActivate([&] { settingsWindow.show(0); });
   audioSettings.setIcon(Icon::Device::Speaker).setText("Audio ...").onActivate([&] { settingsWindow.show(1); });
   #if !defined(PLATFORM_WINDOWS)
@@ -145,7 +162,7 @@ auto Presentation::create() -> void {
     item.setText({"Slot ", 1 + index});
     item.onActivate([=] { program.saveState({"Quick/Slot ", 1 + index}); });
   }
-  loadState.setIcon(Icon::Media::Rewind).setText("Load State");
+  loadState.setIcon(Icon::Action::Open).setText("Load State");
   for(uint index : range(QuickStates)) {
     MenuItem item{&loadState};
     item.setAttribute("name", {"Quick/Slot ", 1 + index});
@@ -189,11 +206,6 @@ auto Presentation::create() -> void {
     audio.clear();
     program.frameAdvanceLock = true;
   });
-  movieMenu.setIcon(Icon::Emblem::Video).setText("Movie");
-  moviePlay.setIcon(Icon::Media::Play).setText("Play").onActivate([&] { program.moviePlay(); });
-  movieRecord.setIcon(Icon::Media::Record).setText("Record").onActivate([&] { program.movieRecord(false); });
-  movieRecordFromBeginning.setIcon(Icon::Media::Record).setText("Reset and Record").onActivate([&] { program.movieRecord(true); });
-  movieStop.setIcon(Icon::Media::Stop).setText("Stop").onActivate([&] { program.movieStop(); });
   captureScreenshot.setIcon(Icon::Emblem::Image).setText("Capture Screenshot").onActivate([&] {
     program.captureScreenshot();
   });

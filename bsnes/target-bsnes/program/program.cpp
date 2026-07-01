@@ -5,8 +5,6 @@
 #include "game-rom.cpp"
 #include "paths.cpp"
 #include "states.cpp"
-#include "movies.cpp"
-#include "rewind.cpp"
 #include "video.cpp"
 #include "audio.cpp"
 #include "input.cpp"
@@ -19,9 +17,26 @@
 #if defined(PLATFORM_WINDOWS)
 extern "C" __declspec(dllimport) UINT WINAPI timeBeginPeriod(UINT period);
 extern "C" __declspec(dllimport) UINT WINAPI timeEndPeriod(UINT period);
+#include <csignal>
+#include <exception>
 #ifndef TIMERR_NOERROR
 #define TIMERR_NOERROR 0
 #endif
+
+auto WINAPI fastLinkInvalidParameterHandler(const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t) -> void {
+  fastLinkCrashWrite("invalid-parameter");
+  std::abort();
+}
+
+auto fastLinkTerminateHandler() -> void {
+  fastLinkCrashWrite("terminate");
+  std::abort();
+}
+
+auto fastLinkSignalHandler(int signal) -> void {
+  fastLinkCrashWrite(signal == SIGABRT ? "signal-sigabrt" : "signal");
+  std::abort();
+}
 #endif
 
 Program program;
@@ -29,6 +44,63 @@ Program program;
 #if defined(PLATFORM_WINDOWS)
 namespace {
 bool windowsLatencyModeActive = false;
+bool ntTimerResolutionActive = false;
+ULONG ntTimerResolutionCurrent = 0;
+
+using NtSetTimerResolutionProc = LONG (WINAPI*)(ULONG, BOOLEAN, PULONG);
+
+auto applyThreadAffinity(int processor) -> void {
+  if(processor == -1) return;
+
+  DWORD_PTR processMask = 0;
+  DWORD_PTR systemMask = 0;
+  if(!GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) || !processMask) return;
+
+  int target = processor;
+  if(target < 0) {
+    target = 0;
+    for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
+      if(processMask & ((DWORD_PTR)1 << index)) target = index;
+    }
+  }
+
+  DWORD_PTR mask = (DWORD_PTR)1 << target;
+  if(!(processMask & mask)) return;
+  SetThreadAffinityMask(GetCurrentThread(), mask);
+  SetThreadIdealProcessor(GetCurrentThread(), target);
+}
+
+auto enableNtTimerResolution() -> void {
+  if(!settings.fastLink.windowsTimerResolution || ntTimerResolutionActive) return;
+  auto ntdll = GetModuleHandleA("ntdll.dll");
+  if(!ntdll) return;
+  auto setTimerResolution = (NtSetTimerResolutionProc)GetProcAddress(ntdll, "NtSetTimerResolution");
+  if(!setTimerResolution) return;
+  if(setTimerResolution(5000, TRUE, &ntTimerResolutionCurrent) >= 0) {
+    ntTimerResolutionActive = true;
+  }
+}
+
+auto disableNtTimerResolution() -> void {
+  if(!ntTimerResolutionActive) return;
+  auto ntdll = GetModuleHandleA("ntdll.dll");
+  auto setTimerResolution = ntdll ? (NtSetTimerResolutionProc)GetProcAddress(ntdll, "NtSetTimerResolution") : nullptr;
+  if(setTimerResolution) setTimerResolution(5000, FALSE, &ntTimerResolutionCurrent);
+  ntTimerResolutionActive = false;
+}
+
+auto enableHighPerformancePowerScheme() -> void {
+  if(!settings.fastLink.windowsHighPerformancePower) return;
+  auto powrprof = LoadLibraryW(L"powrprof.dll");
+  if(!powrprof) return;
+  using PowerSetActiveSchemeProc = DWORD (WINAPI*)(HKEY, const GUID*);
+  auto setActiveScheme = (PowerSetActiveSchemeProc)GetProcAddress(powrprof, "PowerSetActiveScheme");
+  if(setActiveScheme) {
+    const GUID highPerformance = {0x8c5e7fda, 0xe8bf, 0x4a96, {0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c, 0x63, 0x5c}};
+    setActiveScheme(nullptr, &highPerformance);
+  }
+  FreeLibrary(powrprof);
+}
 
 auto enableWindowsLatencyMode() -> void {
   SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
@@ -39,28 +111,70 @@ auto enableWindowsLatencyMode() -> void {
   if(!windowsLatencyModeActive && timeBeginPeriod(1) == TIMERR_NOERROR) {
     windowsLatencyModeActive = true;
   }
+  enableNtTimerResolution();
+  enableHighPerformancePowerScheme();
+  applyThreadAffinity(settings.fastLink.mainThreadAffinity);
 }
 
 auto disableWindowsLatencyMode() -> void {
-  if(!windowsLatencyModeActive) return;
-  timeEndPeriod(1);
-  windowsLatencyModeActive = false;
+  disableNtTimerResolution();
+  if(windowsLatencyModeActive) {
+    timeEndPeriod(1);
+    windowsLatencyModeActive = false;
+  }
+}
+
+auto lowLatencyInactiveYield() -> void {
+  for(uint i : range(200)) {
+    YieldProcessor();
+    SwitchToThread();
+  }
+}
+
+LONG WINAPI fastLinkCrashHandler(EXCEPTION_POINTERS* ep) {
+  return EXCEPTION_CONTINUE_SEARCH;
 }
 }
 #endif
 
 auto Program::create() -> void {
   #if defined(PLATFORM_WINDOWS)
+  SetUnhandledExceptionFilter(fastLinkCrashHandler);
+  _set_invalid_parameter_handler(fastLinkInvalidParameterHandler);
+  std::set_terminate(fastLinkTerminateHandler);
+  signal(SIGABRT, fastLinkSignalHandler);
+  fastLinkDebug("Program::create SEH crash handler installed");
+  fastLinkCrashStep("Program::create: crash handlers installed");
+  #endif
+  fastLinkDebug(
+    "Program::create begin videoDriver=%s present=%s swap=%u audioDriver=%s audioExclusive=%d audioBlocking=%d runAhead=%u ramTrace=%d",
+    (const char*)settings.video.driver,
+    (const char*)settings.video.presentMode,
+    settings.video.swapchainImages,
+    (const char*)settings.audio.driver,
+    settings.audio.exclusive,
+    settings.audio.blocking,
+    settings.fastLink.runAhead,
+    settings.fastLink.ramTraceServer
+  );
+  fastLinkDebug("Program::create libco co_serializable=%d", co_serializable());
+  #if defined(PLATFORM_WINDOWS)
   enableWindowsLatencyMode();
+  fastLinkDebug("Program::create latency mode enabled");
   #endif
 
   Emulator::platform = this;
 
+  fastLinkCrashStep("Program::create: presentation begin");
+  fastLinkDebug("Program::create presentation begin");
   presentation.create();
   presentation.setVisible();
   presentation.viewport.setFocused();
-  fastLinkRAMTraceService.start();
+  fastLinkDebug("Program::create presentation ready viewport=%p", (void*)presentation.viewport.handle());
+  if(settings.fastLink.ramTraceServer) fastLinkRAMTraceService.start();
 
+  fastLinkCrashStep("Program::create: settings/tools windows begin");
+  fastLinkDebug("Program::create settings/tools windows begin");
   settingsWindow.create();
   videoSettings.create();
   audioSettings.create();
@@ -82,6 +196,8 @@ auto Program::create() -> void {
   stateWindow.create();
   stateManager.create();
   manifestViewer.create();
+  fastLinkDebug("Program::create settings/tools windows ready");
+  fastLinkCrashStep("Program::create: settings/tools windows ready");
 
   if(settings.general.crashed) {
     string crashComponent = settings.general.crashComponent;
@@ -120,19 +236,28 @@ auto Program::create() -> void {
   settings.general.crashed = true;
   settings.general.crashComponent = "Video";
   settings.save();
+  fastLinkCrashStep("Program::create: updateVideoDriver");
+  fastLinkDebug("Program::create updateVideoDriver begin");
   updateVideoDriver(presentation);
+  fastLinkDebug("Program::create updateVideoDriver done ready=%d driver=%s", video.ready(), (const char*)video.driver());
 
   settings.general.crashComponent = "Audio";
-  settings.save();
+  fastLinkCrashStep("Program::create: updateAudioDriver");
+  fastLinkDebug("Program::create updateAudioDriver begin");
   updateAudioDriver(presentation);
+  fastLinkDebug("Program::create updateAudioDriver done ready=%d driver=%s", audio.ready(), (const char*)audio.driver());
 
   settings.general.crashComponent = "Input";
-  settings.save();
+  fastLinkCrashStep("Program::create: updateInputDriver");
+  fastLinkDebug("Program::create updateInputDriver begin");
   updateInputDriver(presentation);
+  fastLinkDebug("Program::create updateInputDriver done ready=%d driver=%s", input.ready(), (const char*)input.driver());
 
   settings.general.crashed = false;
   settings.general.crashComponent = "";
   settings.save();
+  fastLinkDebug("Program::create crash guard cleared");
+  fastLinkCrashStep("Program::create: crash guard cleared");
 
   if(gameQueue) load();
   if(startFullScreen && emulator->loaded()) {
@@ -142,24 +267,43 @@ auto Program::create() -> void {
   inputManager.startWorker();
   #endif
   Application::onMain({&Program::main, this});
+  fastLinkDebug("Program::create complete");
+  fastLinkCrashStep("Program::create: complete");
 }
 
 auto Program::main() -> void {
-  updateStatus();
-  video.poll();
+  static uint64 mainTraceCounter = 0;
+  mainTraceCounter++;
+  bool traceFrame = mainTraceCounter <= 2000;
 
-  if(Application::modal()) {
-    audio.clear();
-    return;
-  }
+  updateStatus();
 
   #if !defined(PLATFORM_WINDOWS)
   inputManager.poll();
   #endif
   inputManager.pollHotkeys();
+  video.poll();
+
+  if(Application::modal()) {
+    if(traceFrame) fastLinkDebug("Program::main[%llu] modal return", (unsigned long long)mainTraceCounter);
+    resetFramePacer();
+    return;
+  }
 
   static bool previouslyInactive = true;
   bool currentlyInactive = inactive();
+  if(traceFrame) {
+    fastLinkDebug(
+      "Program::main[%llu] loaded=%d inactive=%d warmup=%u runAheadSetting=%u frameAdvance=%d fastForward=%d",
+      (unsigned long long)mainTraceCounter,
+      emulator && emulator->loaded(),
+      currentlyInactive,
+      runAheadWarmupFrames,
+      settings.fastLink.runAhead,
+      presentation.frameAdvance.checked(),
+      fastForwarding
+    );
+  }
 
   // check if emulator has transitioned from active to inactive or vice versa
   if(previouslyInactive != currentlyInactive) {
@@ -168,16 +312,79 @@ auto Program::main() -> void {
   }
 
   if(currentlyInactive) {
-    audio.clear();
-    usleep(20 * 1000);
+    if(traceFrame) fastLinkDebug("Program::main[%llu] inactive return", (unsigned long long)mainTraceCounter);
+    resetFramePacer();
+    #if defined(PLATFORM_WINDOWS)
+    if(settings.fastLink.lowLatencyInactiveYield) {
+      lowLatencyInactiveYield();
+    } else
+    #endif
+    {
+      usleep(20 * 1000);
+    }
     viewportRefresh();
     return;
   }
 
-  rewindRun();
+  auto frames = runAheadFrames();
+  if(traceFrame) fastLinkDebug("Program::main[%llu] runAheadFrames=%u", (unsigned long long)mainTraceCounter, frames);
+  if(frames == 0) {
+    if(traceFrame) fastLinkDebug("Program::main[%llu] normal frame begin", (unsigned long long)mainTraceCounter);
+    runEmulationFrame(true, true, true);
+    if(traceFrame) fastLinkDebug("Program::main[%llu] normal frame done", (unsigned long long)mainTraceCounter);
+  } else {
+    auto serializeRunAhead = [&](const char* label) -> serializer {
+      if(traceFrame) {
+        fastLinkDebug(
+          "Program::main[%llu] serialize %s deterministic begin co_serializable=%d",
+          (unsigned long long)mainTraceCounter,
+          label,
+          co_serializable()
+        );
+      }
+      auto state = emulator->serialize(false);
+      if(traceFrame) fastLinkDebug("Program::main[%llu] serialize %s deterministic size=%u", (unsigned long long)mainTraceCounter, label, (uint)state.size());
+      return state;
+    };
 
-  emulator->run();
+    if(traceFrame) fastLinkDebug("Program::main[%llu] real frame begin", (unsigned long long)mainTraceCounter);
+    runEmulationFrame(false, true, true);
+    if(traceFrame) fastLinkDebug("Program::main[%llu] serialize real begin", (unsigned long long)mainTraceCounter);
+    auto realFrame = serializeRunAhead("real");
+    if(traceFrame) fastLinkDebug("Program::main[%llu] serialize real size=%u", (unsigned long long)mainTraceCounter, (uint)realFrame.size());
+    if(!realFrame.size()) {
+      resetRunAheadWarmup();
+      if(traceFrame) fastLinkDebug("Program::main[%llu] real serialize empty; rendering recovery frame", (unsigned long long)mainTraceCounter);
+      runEmulationFrame(true, true, true);
+    } else {
+      auto realTurboCounter = inputManager.turboCounter;
+      for(uint frame : range(frames)) {
+        if(traceFrame) fastLinkDebug(
+          "Program::main[%llu] run-ahead speculative frame %u/%u begin",
+          (unsigned long long)mainTraceCounter,
+          frame + 1,
+          frames
+        );
+        runEmulationFrame(frame + 1 == frames, false, false);
+        if(traceFrame) fastLinkDebug(
+          "Program::main[%llu] run-ahead speculative frame %u/%u done",
+          (unsigned long long)mainTraceCounter,
+          frame + 1,
+          frames
+        );
+      }
+      serializer restore{realFrame.data(), (uint)realFrame.size()};
+      if(traceFrame) fastLinkDebug("Program::main[%llu] restoring real frame", (unsigned long long)mainTraceCounter);
+      bool restored = emulator->unserialize(restore);
+      inputManager.turboCounter = realTurboCounter;
+      if(!restored) resetRunAheadWarmup();
+      if(traceFrame) fastLinkDebug("Program::main[%llu] restored real frame=%d", (unsigned long long)mainTraceCounter, restored);
+    }
+  }
+  if(runAheadWarmupFrames) runAheadWarmupFrames--;
+
   fastLinkRAMTraceService.publishFrame();
+  if(traceFrame) fastLinkDebug("Program::main[%llu] published RAM trace if requested", (unsigned long long)mainTraceCounter);
 
   if(emulatorSettings.autoSaveMemory.checked()) {
     auto currentTime = chrono::timestamp();
@@ -186,6 +393,93 @@ auto Program::main() -> void {
       emulator->save();
     }
   }
+
+  paceFrame();
+  if(traceFrame) fastLinkDebug("Program::main[%llu] done", (unsigned long long)mainTraceCounter);
+}
+
+auto Program::runEmulationFrame(bool videoEnabled, bool audioEnabled, bool accountFrame) -> void {
+  static uint64 runFrameTraceCounter = 0;
+  runFrameTraceCounter++;
+  bool traceFrame = runFrameTraceCounter <= 240;
+  if(traceFrame) {
+    fastLinkDebug(
+      "Program::runEmulationFrame[%llu] begin video=%d audio=%d account=%d",
+      (unsigned long long)runFrameTraceCounter,
+      videoEnabled,
+      audioEnabled,
+      accountFrame
+    );
+  }
+  auto previousVideo = suppressVideoFrame;
+  auto previousAudio = suppressAudioFrame;
+  auto previousAccounting = suppressFrameAccounting;
+  suppressVideoFrame = !videoEnabled;
+  suppressAudioFrame = !audioEnabled;
+  suppressFrameAccounting = !accountFrame;
+  emulator->run();
+  suppressVideoFrame = previousVideo;
+  suppressAudioFrame = previousAudio;
+  suppressFrameAccounting = previousAccounting;
+  if(traceFrame) fastLinkDebug("Program::runEmulationFrame[%llu] done", (unsigned long long)runFrameTraceCounter);
+}
+
+auto Program::runAheadFrames() const -> uint {
+  if(!emulator || !emulator->loaded()) return 0;
+  if(!settings.fastLink.runAhead) return 0;
+  if(!co_serializable()) {
+    static bool logged = false;
+    if(!logged) {
+      logged = true;
+      fastLinkDebug(
+        "Program::runAheadFrames disabled for this process: libco backend is not stack-serializable; requested=%u",
+        settings.fastLink.runAhead
+      );
+    }
+    return 0;
+  }
+  if(runAheadWarmupFrames) return 0;
+  if(frameAdvanceLock || presentation.frameAdvance.checked()) return 0;
+  if(fastForwarding) return 0;
+  return min(4u, settings.fastLink.runAhead);
+}
+
+auto Program::resetRunAheadWarmup() -> void {
+  runAheadWarmupFrames = 8;
+}
+
+auto Program::paceFrame() -> void {
+  if(!settings.fastLink.softwareFramePacing || fastForwarding) return resetFramePacer();
+  if(settings.video.blocking || settings.audio.blocking) return resetFramePacer();
+
+  uint64 frameDuration = superFamicom.region == "PAL" ? 20'000'000ull : 16'666'667ull;
+  auto now = chrono::nanosecond();
+  if(!framePaceDeadline || now > framePaceDeadline + frameDuration) {
+    framePaceDeadline = now + frameDuration;
+    return;
+  }
+
+  while((now = chrono::nanosecond()) + 2'000'000ull < framePaceDeadline) {
+    #if defined(PLATFORM_WINDOWS)
+    SwitchToThread();
+    #else
+    ::std::this_thread::yield();
+    #endif
+  }
+  while((now = chrono::nanosecond()) < framePaceDeadline) {
+    #if defined(PLATFORM_WINDOWS)
+    YieldProcessor();
+    #elif defined(__SSE2__)
+    __builtin_ia32_pause();
+    #else
+    ::std::this_thread::yield();
+    #endif
+  }
+  framePaceDeadline += frameDuration;
+}
+
+auto Program::resetFramePacer() -> void {
+  framePaceDeadline = 0;
 }
 
 auto Program::quit() -> void {
@@ -219,7 +513,10 @@ auto Program::quit() -> void {
   //this seems to be due to the internal state of certain ruby drivers.
   auto processID = GetCurrentProcessId();
   auto handle = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, true, processID);
-  TerminateProcess(handle, 0);
+  if(handle) {
+    TerminateProcess(handle, 0);
+    CloseHandle(handle);
+  }
   #endif
 
   Application::exit();

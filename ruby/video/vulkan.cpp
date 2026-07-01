@@ -15,16 +15,8 @@
 #include <cstdio>
 
 namespace {
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
+#if defined(VK_USE_PLATFORM_WIN32_KHR) && defined(BUILD_DEBUG)
 auto VideoVulkanTrace(const char* format, ...) -> void {
-  char buffer[2048];
-  int offset = snprintf(buffer, sizeof(buffer), "[bsnes-fastlink][vulkan] ");
-  if(offset < 0) offset = 0;
-  va_list args;
-  va_start(args, format);
-  vsnprintf(buffer + offset, sizeof(buffer) - offset, format, args);
-  va_end(args);
-  OutputDebugStringA(buffer);
 }
 #else
 auto VideoVulkanTrace(const char* format, ...) -> void {
@@ -62,6 +54,21 @@ struct VideoVulkan : VideoDriver {
 
   auto setFlush(bool flush) -> bool override {
     this->flush = flush;
+    return true;
+  }
+
+  auto setPresentMode(string presentMode) -> bool override {
+    if(presentMode != "Immediate" && presentMode != "Mailbox" && presentMode != "FIFO") return false;
+    this->presentMode = presentMode;
+    if(_ready) recreateSwapchain();
+    return true;
+  }
+
+  auto setSwapchainImages(uint swapchainImages) -> bool override {
+    if(swapchainImages < 2) swapchainImages = 2;
+    if(swapchainImages > _maxImages) swapchainImages = _maxImages;
+    this->swapchainImages = swapchainImages;
+    if(_ready) recreateSwapchain();
     return true;
   }
 
@@ -165,9 +172,9 @@ struct VideoVulkan : VideoDriver {
       recreateSwapchain();
     }
 
-    //optional GPU drain for minimum latency
+    //optional per-frame fence wait; avoids draining unrelated queue work
     if(flush) {
-      vkQueueWaitIdle(_queue);
+      vkWaitForFences(_device, 1, &_fences[imageIndex], VK_TRUE, UINT64_MAX);
     }
     if(traceOutput) VideoVulkanTrace("output[%u]: done\n", debugOutputCount);
     debugOutputCount++;
@@ -480,22 +487,34 @@ private:
       _swapExtent.height = 720;
     }
 
-    //request minimum images for lowest latency
+    uint32_t requestedImages = swapchainImages;
+    if(requestedImages < 2) requestedImages = 2;
+    if(requestedImages > _maxImages) requestedImages = _maxImages;
     uint32_t minImages = caps.minImageCount;
-    if(minImages < 2) minImages = 2;
+    if(minImages < requestedImages) minImages = requestedImages;
+    if(caps.maxImageCount && minImages > caps.maxImageCount) minImages = caps.maxImageCount;
 
-    //pick best present mode: Immediate > Mailbox > FIFO
     uint32_t presentModeCount = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(_physicalDevice, _surface, &presentModeCount, nullptr);
     VkPresentModeKHR presentModes[16];
     presentModeCount = presentModeCount > 16 ? 16 : presentModeCount;
     vkGetPhysicalDeviceSurfacePresentModesKHR(_physicalDevice, _surface, &presentModeCount, presentModes);
 
+    auto hasPresentMode = [&](VkPresentModeKHR mode) -> bool {
+      for(uint32_t i = 0; i < presentModeCount; i++) {
+        if(presentModes[i] == mode) return true;
+      }
+      return false;
+    };
+
+    VkPresentModeKHR requestedMode = VK_PRESENT_MODE_FIFO_KHR;
+    if(presentMode == "Immediate") requestedMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    if(presentMode == "Mailbox") requestedMode = VK_PRESENT_MODE_MAILBOX_KHR;
+
     VkPresentModeKHR bestMode = VK_PRESENT_MODE_FIFO_KHR;
-    for(uint32_t i = 0; i < presentModeCount; i++) {
-      if(presentModes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) { bestMode = VK_PRESENT_MODE_IMMEDIATE_KHR; break; }
-      if(presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR) bestMode = VK_PRESENT_MODE_MAILBOX_KHR;
-    }
+    if(hasPresentMode(requestedMode)) bestMode = requestedMode;
+    else if(hasPresentMode(VK_PRESENT_MODE_MAILBOX_KHR)) bestMode = VK_PRESENT_MODE_MAILBOX_KHR;
+    else if(hasPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR)) bestMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
 
     VkSwapchainCreateInfoKHR swapInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     swapInfo.surface = _surface;

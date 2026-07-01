@@ -59,6 +59,8 @@ struct NativeVideoManager {
   auto context() const -> uintptr { return _context; }
   auto blocking() const -> bool { return _blocking; }
   auto flush() const -> bool { return _flush; }
+  auto presentMode() const -> string { return _presentMode; }
+  auto swapchainImages() const -> uint { return _swapchainImages; }
   auto format() const -> string { return _format; }
   auto shader() const -> string { return _shader; }
 
@@ -68,6 +70,8 @@ struct NativeVideoManager {
   auto setContext(uintptr context) -> bool;
   auto setBlocking(bool blocking) -> bool;
   auto setFlush(bool flush) -> bool;
+  auto setPresentMode(string presentMode) -> bool;
+  auto setSwapchainImages(uint swapchainImages) -> bool;
   auto setFormat(string format) -> bool;
   auto setShader(string shader) -> bool;
 
@@ -94,7 +98,9 @@ private:
   bool _exclusive = false;
   uintptr _context = 0;
   bool _blocking = false;
-  bool _flush = true;
+  bool _flush = false;
+  string _presentMode = "Mailbox";
+  uint _swapchainImages = 2;
   string _format = "ARGB24";
   string _shader = "None";
   Size _lastSize = {};

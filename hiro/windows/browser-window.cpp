@@ -2,6 +2,9 @@
 
 namespace hiro {
 
+static auto BrowserWindowCrashStep(const char* step) -> void {
+}
+
 static auto CALLBACK BrowserWindowCallbackProc(HWND hwnd, UINT msg, LPARAM lparam, LPARAM lpdata) -> signed {
   if(msg == BFFM_INITIALIZED) {
     if(lpdata) {
@@ -14,39 +17,53 @@ static auto CALLBACK BrowserWindowCallbackProc(HWND hwnd, UINT msg, LPARAM lpara
   return 0;
 }
 
+static auto BrowserWindowFilters(const vector<string>& filters) -> vector<wchar_t> {
+  vector<wchar_t> result;
+
+  for(auto& filter : filters) {
+    auto part = filter.split("|", 1L);
+    if(part.size() != 2) continue;
+
+    utf16_t name(part(0));
+    utf16_t pattern(string{part(1)}.transform(":", ";"));
+
+    for(uint i = 0; i < name.size(); i++) result.append(name[i]);
+    result.append(L'\0');
+
+    for(uint i = 0; i < pattern.size(); i++) result.append(pattern[i]);
+    result.append(L'\0');
+  }
+
+  result.append(L'\0');
+  return result;
+}
+
 static auto BrowserWindow_fileDialog(bool save, BrowserWindow::State& state) -> string {
   string path = string{state.path}.replace("/", "\\");
 
-  string filters;
-  for(auto& filter : state.filters) {
-    auto part = filter.split("|", 1L);
-    if(part.size() != 2) continue;
-    filters.append(filter, "\t", part[1].transform(":", ";"), "\t");
-  }
-
-  utf16_t wfilters(filters);
+  auto wfilters = BrowserWindowFilters(state.filters);
   wchar_t wname[PATH_MAX + 1] = L"";
   utf16_t wpath(path);
   utf16_t wtitle(state.title);
 
-  wchar_t* p = wfilters;
-  while(*p != L'\0') {
-    if(*p == L'\t') *p = L'\0';
-    p++;
-  }
-
   if(path) {
     //clear COMDLG32 MRU (most recently used) file list
     //this is required in order for lpstrInitialDir to be honored in Windows 7 and above
+    BrowserWindowCrashStep("BrowserWindow_fileDialog: remove MRU begin");
     registry::remove("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\LastVisitedPidlMRU\\");
     registry::remove("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\OpenSavePidlMRU\\");
+    BrowserWindowCrashStep("BrowserWindow_fileDialog: remove MRU done");
   }
 
   OPENFILENAME ofn;
   memset(&ofn, 0, sizeof(OPENFILENAME));
   ofn.lStructSize = sizeof(OPENFILENAME);
-  ofn.hwndOwner = state.parent ? state.parent->self()->hwnd : 0;
-  ofn.lpstrFilter = wfilters;
+  ofn.hwndOwner = 0;
+  if(state.parent) {
+    auto hwnd = state.parent->self()->hwnd;
+    if(hwnd && IsWindow(hwnd)) ofn.hwndOwner = hwnd;
+  }
+  ofn.lpstrFilter = wfilters.data();
   ofn.lpstrInitialDir = wpath;
   ofn.lpstrFile = wname;
   ofn.lpstrTitle = wtitle;
@@ -54,7 +71,9 @@ static auto BrowserWindow_fileDialog(bool save, BrowserWindow::State& state) -> 
   ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
   ofn.lpstrDefExt = L"";
 
+  BrowserWindowCrashStep("BrowserWindow_fileDialog: GetOpenFileName begin");
   bool result = (save == false ? GetOpenFileName(&ofn) : GetSaveFileName(&ofn));
+  BrowserWindowCrashStep("BrowserWindow_fileDialog: GetOpenFileName done");
   if(result == false) return "";
   string name = (const char*)utf8_t(wname);
   name.transform("\\", "/");
@@ -65,7 +84,11 @@ auto pBrowserWindow::directory(BrowserWindow::State& state) -> string {
   wchar_t wname[PATH_MAX + 1] = L"";
 
   BROWSEINFO bi;
-  bi.hwndOwner = state.parent ? state.parent->self()->hwnd : 0;
+  bi.hwndOwner = 0;
+  if(state.parent) {
+    auto hwnd = state.parent->self()->hwnd;
+    if(hwnd && IsWindow(hwnd)) bi.hwndOwner = hwnd;
+  }
   bi.pidlRoot = NULL;
   bi.pszDisplayName = wname;
   bi.lpszTitle = L"\nChoose a directory:";
@@ -74,7 +97,9 @@ auto pBrowserWindow::directory(BrowserWindow::State& state) -> string {
   bi.lParam = (LPARAM)&state;
   bi.iImage = 0;
   bool result = false;
+  BrowserWindowCrashStep("BrowserWindow_fileDialog: SHBrowseForFolder begin");
   LPITEMIDLIST pidl = SHBrowseForFolder(&bi);
+  BrowserWindowCrashStep("BrowserWindow_fileDialog: SHBrowseForFolder done");
   if(pidl) {
     if(SHGetPathFromIDList(pidl, wname)) {
       result = true;

@@ -12,6 +12,18 @@ constexpr uint NativeGamepadDeviceID = 1;
 
 //ROM data is held in memory to support compressed archives, soft-patching, and game hacks
 auto Program::open(uint id, string name, vfs::file::mode mode, bool required) -> shared_pointer<vfs::file> {
+  static uint openTraceCounter = 0;
+  bool traceOpen = openTraceCounter++ < 120;
+  fastLinkCrashStep("Program::open: begin");
+  if(traceOpen) {
+    fastLinkDebug(
+      "Program::open begin id=%u name=%s mode=%u required=%d",
+      id,
+      (const char*)name,
+      (uint)mode,
+      required
+    );
+  }
   shared_pointer<vfs::file> result;
 
   if(id == 0) {  //System
@@ -92,13 +104,24 @@ auto Program::open(uint id, string name, vfs::file::mode mode, bool required) ->
   }
 
   if(!result && required) {
+    if(traceOpen) fastLinkDebug("Program::open missing required id=%u name=%s", id, (const char*)name);
     MessageDialog({"Error: missing required data: ", name}).setAlignment(*presentation).error();
   }
 
+  if(traceOpen) fastLinkDebug("Program::open done id=%u name=%s result=%d", id, (const char*)name, (bool)result);
+    fastLinkCrashStep("Program::open: done");
   return result;
 }
 
 auto Program::load(uint id, string name, string type, vector<string> options) -> Emulator::Platform::Load {
+    fastLinkCrashStep("Program::platformLoad: begin");
+  fastLinkDebug(
+    "Program::platformLoad begin id=%u name=%s type=%s queued=%d",
+    id,
+    (const char*)name,
+    (const char*)type,
+    (bool)gameQueue
+  );
   BrowserDialog dialog;
   dialog.setAlignment(*presentation);
   dialog.setOptions(options);
@@ -116,10 +139,13 @@ auto Program::load(uint id, string name, string type, vector<string> options) ->
       superFamicom.option = dialog.option();
     }
     if(inode::exists(superFamicom.location)) {
+      fastLinkCrashStep("Program::platformLoad: super famicom load");
       settings.path.recent.superFamicom = Location::dir(superFamicom.location);
       if(loadSuperFamicom(superFamicom.location)) {
+        fastLinkDebug("Program::platformLoad Super Famicom done option=%s", (const char*)superFamicom.option);
         return {id, superFamicom.option};
       }
+      fastLinkDebug("Program::platformLoad Super Famicom load failed");
     }
   }
 
@@ -136,10 +162,13 @@ auto Program::load(uint id, string name, string type, vector<string> options) ->
       gameBoy.option = dialog.option();
     }
     if(inode::exists(gameBoy.location)) {
+      fastLinkCrashStep("Program::platformLoad: game boy load");
       settings.path.recent.gameBoy = Location::dir(gameBoy.location);
       if(loadGameBoy(gameBoy.location)) {
+        fastLinkDebug("Program::platformLoad Game Boy done option=%s", (const char*)gameBoy.option);
         return {id, gameBoy.option};
       }
+      fastLinkDebug("Program::platformLoad Game Boy load failed");
     }
   }
 
@@ -156,10 +185,13 @@ auto Program::load(uint id, string name, string type, vector<string> options) ->
       bsMemory.option = dialog.option();
     }
     if(inode::exists(bsMemory.location)) {
+      fastLinkCrashStep("Program::platformLoad: bs memory load");
       settings.path.recent.bsMemory = Location::dir(bsMemory.location);
       if(loadBSMemory(bsMemory.location)) {
+        fastLinkDebug("Program::platformLoad BS Memory done option=%s", (const char*)bsMemory.option);
         return {id, bsMemory.option};
       }
+      fastLinkDebug("Program::platformLoad BS Memory load failed");
     }
   }
 
@@ -176,10 +208,13 @@ auto Program::load(uint id, string name, string type, vector<string> options) ->
       sufamiTurboA.option = dialog.option();
     }
     if(inode::exists(sufamiTurboA.location)) {
+      fastLinkCrashStep("Program::platformLoad: sufami turbo A load");
       settings.path.recent.sufamiTurboA = Location::dir(sufamiTurboA.location);
       if(loadSufamiTurboA(sufamiTurboA.location)) {
+        fastLinkDebug("Program::platformLoad Sufami Turbo A done option=%s", (const char*)sufamiTurboA.option);
         return {id, sufamiTurboA.option};
       }
+      fastLinkDebug("Program::platformLoad Sufami Turbo A load failed");
     }
   }
 
@@ -196,17 +231,45 @@ auto Program::load(uint id, string name, string type, vector<string> options) ->
       sufamiTurboB.option = dialog.option();
     }
     if(inode::exists(sufamiTurboB.location)) {
+      fastLinkCrashStep("Program::platformLoad: sufami turbo B load");
       settings.path.recent.sufamiTurboB = Location::dir(sufamiTurboB.location);
       if(loadSufamiTurboB(sufamiTurboB.location)) {
+        fastLinkDebug("Program::platformLoad Sufami Turbo B done option=%s", (const char*)sufamiTurboB.option);
         return {id, sufamiTurboB.option};
       }
+      fastLinkDebug("Program::platformLoad Sufami Turbo B load failed");
     }
   }
 
+  fastLinkDebug("Program::platformLoad returning empty id=%u name=%s", id, (const char*)name);
+    fastLinkCrashStep("Program::platformLoad: empty return");
   return {};
 }
 
 auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height, uint scale) -> void {
+  static uint64 videoFrameTraceCounter = 0;
+  videoFrameTraceCounter++;
+  bool traceFrame = videoFrameTraceCounter <= 120;
+    fastLinkCrashStep("Program::videoFrame: begin");
+  if(traceFrame) {
+    fastLinkDebug(
+      "Program::videoFrame[%llu] begin data=%p pitch=%u width=%u height=%u scale=%u suppressVideo=%d suppressAccounting=%d",
+      (unsigned long long)videoFrameTraceCounter,
+      (const void*)data,
+      pitch,
+      width,
+      height,
+      scale,
+      suppressVideoFrame,
+      suppressFrameAccounting
+    );
+  }
+  if(!suppressFrameAccounting) inputManager.frame();
+  if(suppressVideoFrame) {
+    if(traceFrame) fastLinkDebug("Program::videoFrame[%llu] suppressed", (unsigned long long)videoFrameTraceCounter);
+    return;
+  }
+
   //this relies on the UI only running between Emulator::Scheduler::Event::Frame events
   //this will always be the case; so we can avoid an unnecessary copy or one-frame delay here
   //if the core were to exit between a frame event, the next frame might've been only partially rendered
@@ -228,13 +291,52 @@ auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height
 
   uint filterWidth = width, filterHeight = height;
   auto filterRender = filterSelect(filterWidth, filterHeight, scale);
-  if(auto [output, length] = video.acquire(filterWidth, filterHeight); output) {
-    filterRender(palette, output, length, (const uint16_t*)data, pitch << 1, width, height);
-    video.release();
-    video.output(outputWidth, outputHeight);
+  if(traceFrame) {
+    fastLinkDebug(
+      "Program::videoFrame[%llu] viewport=%ux%u filter=%ux%u",
+      (unsigned long long)videoFrameTraceCounter,
+      outputWidth,
+      outputHeight,
+      filterWidth,
+      filterHeight
+    );
   }
-
-  inputManager.frame();
+  if(auto [output, length] = video.acquire(filterWidth, filterHeight); output) {
+    fastLinkCrashStep("Program::videoFrame: acquired");
+    if(traceFrame) fastLinkDebug("Program::videoFrame[%llu] video.acquire ok output=%p pitch=%u", (unsigned long long)videoFrameTraceCounter, (void*)output, length);
+    filterRender(palette, output, length, (const uint16_t*)data, pitch << 1, width, height);
+    fastLinkCrashStep("Program::videoFrame: filtered");
+    if(traceFrame) {
+      uint32_t checksum = 2166136261u;
+      uint32_t alpha = 0;
+      uint32_t nonBlack = 0;
+      uint stride = max(1u, (filterWidth * filterHeight) / 64u);
+      uint pitchPixels = length >> 2;
+      for(uint index = 0; index < filterWidth * filterHeight; index += stride) {
+        uint32_t pixel = output[(index / filterWidth) * pitchPixels + (index % filterWidth)];
+        checksum = (checksum ^ pixel) * 16777619u;
+        alpha |= pixel >> 24;
+        if(pixel & 0x00ffffff) nonBlack++;
+      }
+      fastLinkDebug(
+        "Program::videoFrame[%llu] pixels sample0=%08x checksum=%08x alphaOr=%02x nonBlackSamples=%u",
+        (unsigned long long)videoFrameTraceCounter,
+        output[0],
+        checksum,
+        alpha,
+        nonBlack
+      );
+    }
+    video.release();
+    fastLinkCrashStep("Program::videoFrame: released");
+    if(traceFrame) fastLinkDebug("Program::videoFrame[%llu] video.output begin", (unsigned long long)videoFrameTraceCounter);
+    fastLinkCrashStep("Program::videoFrame: output begin");
+    video.output(outputWidth, outputHeight);
+    fastLinkCrashStep("Program::videoFrame: output done");
+    if(traceFrame) fastLinkDebug("Program::videoFrame[%llu] video.output done", (unsigned long long)videoFrameTraceCounter);
+  } else {
+    if(traceFrame) fastLinkDebug("Program::videoFrame[%llu] video.acquire returned null ready=%d", (unsigned long long)videoFrameTraceCounter, video.ready());
+  }
 
   if(presentation.frameAdvance.checked()) {
     frameAdvanceLock = true;
@@ -253,12 +355,32 @@ auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height
 }
 
 auto Program::audioFrame(const double* samples, uint channels) -> void {
+  static uint64 audioFrameTraceCounter = 0;
+  audioFrameTraceCounter++;
+  bool traceFrame = audioFrameTraceCounter <= 80;
+  if(traceFrame) {
+    fastLinkDebug(
+      "Program::audioFrame[%llu] begin samples=%p channels=%u suppressAudio=%d mute=%u ready=%d",
+      (unsigned long long)audioFrameTraceCounter,
+      (const void*)samples,
+      channels,
+      suppressAudioFrame,
+      mute,
+      audio.ready()
+    );
+  }
+  if(suppressAudioFrame) {
+    if(traceFrame) fastLinkDebug("Program::audioFrame[%llu] suppressed", (unsigned long long)audioFrameTraceCounter);
+    return;
+  }
+
   if(mute) {
     double silence[] = {0.0, 0.0};
     audio.output(silence);
   } else {
     audio.output(samples);
   }
+  if(traceFrame) fastLinkDebug("Program::audioFrame[%llu] done", (unsigned long long)audioFrameTraceCounter);
 }
 
 auto Program::inputPoll(uint port, uint device, uint input) -> int16 {
@@ -267,25 +389,15 @@ auto Program::inputPoll(uint port, uint device, uint input) -> int16 {
     #if defined(PLATFORM_WINDOWS)
     if(device == NativeGamepadDeviceID) {
       value = nativeInputManager.pollGamepad(port, input);
-    } else if(auto mapping = inputManager.mapping(port, device, input)) {
+    } else if(auto mapping = inputManager.cachedMapping(port, device, input)) {
       value = mapping->poll();
     }
     #else
     inputManager.poll();
-    if(auto mapping = inputManager.mapping(port, device, input)) {
+    if(auto mapping = inputManager.cachedMapping(port, device, input)) {
       value = mapping->poll();
     }
     #endif
-  }
-  if(movie.mode == Movie::Mode::Recording) {
-    movie.input.append(value);
-  } else if(movie.mode == Movie::Mode::Playing) {
-    if(movie.input) {
-      value = movie.input.takeFirst();
-    }
-    if(!movie.input) {
-      movieStop();
-    }
   }
   return value;
 }
@@ -297,7 +409,7 @@ auto Program::inputRumble(uint port, uint device, uint input, bool enable) -> vo
       return nativeInputManager.rumbleGamepad(port, input, enable);
     }
     #endif
-    if(auto mapping = inputManager.mapping(port, device, input)) {
+    if(auto mapping = inputManager.cachedMapping(port, device, input)) {
       return mapping->rumble(enable);
     }
   }

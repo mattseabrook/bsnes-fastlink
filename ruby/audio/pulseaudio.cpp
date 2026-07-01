@@ -76,11 +76,16 @@ private:
     _specification.rate = self.frequency;
     _stream = pa_stream_new(_context, "audio", &_specification, nullptr);
 
+    auto frameBytes = pa_frame_size(&_specification);
+    auto targetLength = pa_usec_to_bytes(self.latency * PA_USEC_PER_MSEC, &_specification);
+    auto minimumRequest = max(frameBytes * 64, targetLength / 4);
+
     pa_buffer_attr bufferAttributes;
-    bufferAttributes.maxlength = -1;
-    bufferAttributes.tlength = pa_usec_to_bytes(self.latency * PA_USEC_PER_MSEC, &_specification);
-    bufferAttributes.prebuf = -1;
-    bufferAttributes.minreq = -1;
+    bufferAttributes.maxlength = targetLength;
+    bufferAttributes.tlength = targetLength;
+    // Disable prebuffering to avoid multi-second startup and steady-state delay on some Bluetooth sinks.
+    bufferAttributes.prebuf = 0;
+    bufferAttributes.minreq = minimumRequest;
     bufferAttributes.fragsize = -1;
 
     pa_stream_flags_t flags = (pa_stream_flags_t)(PA_STREAM_ADJUST_LATENCY | PA_STREAM_VARIABLE_RATE);
@@ -94,8 +99,8 @@ private:
     } while(streamState != PA_STREAM_READY);
 
     const pa_buffer_attr* attributes = pa_stream_get_buffer_attr(_stream);
-    _period = attributes->minreq;
-    _bufferSize = attributes->tlength;
+    _period = max(frameBytes * 64, min((size_t)attributes->minreq, targetLength / 4));
+    _bufferSize = max(_period, min((size_t)attributes->tlength, targetLength));
     _offset = 0;
     return _ready = true;
   }

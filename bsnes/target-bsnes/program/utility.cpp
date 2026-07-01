@@ -13,11 +13,13 @@ auto Program::openGame(BrowserDialog& dialog) -> string {
     return dialog.openObject();
   }
 
+  fastLinkCrashStep("Program::openGame: begin");
   BrowserWindow window;
   window.setTitle(dialog.title());
   window.setPath(dialog.path());
   window.setFilters(dialog.filters());
   window.setParent(dialog.alignmentWindow());
+  fastLinkCrashStep("Program::openGame: window configured");
   return window.open();
 }
 

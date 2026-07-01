@@ -1,9 +1,17 @@
 auto Program::load() -> void {
-  if(loading) return;
+  if(loading) {
+    fastLinkDebug("Program::load ignored because another load is active");
+    return;
+  }
+  fastLinkCrashStep("Program::load: begin");
+  fastLinkDebug("Program::load begin queued=%d loaded=%d", (bool)gameQueue, emulator && emulator->loaded());
   loading = true;
   struct LoadGuard {
     bool& loading;
-    ~LoadGuard() { loading = false; }
+    ~LoadGuard() {
+      fastLinkDebug("Program::load guard release");
+      loading = false;
+    }
   } loadGuard{loading};
 
   auto clearGameSlots = [&] {
@@ -15,6 +23,8 @@ auto Program::load() -> void {
   };
 
   if(!gameQueue) {
+    fastLinkDebug("Program::load opening file dialog");
+    fastLinkCrashStep("Program::load: before openGame");
     BrowserDialog dialog;
     dialog.setAlignment(*presentation);
     dialog.setOptions({"Auto", "NTSC", "PAL"});
@@ -22,12 +32,18 @@ auto Program::load() -> void {
     dialog.setPath(path("Games", settings.path.recent.superFamicom));
     dialog.setFilters({string{"SNES ROMs|*.sfc:*.smc:*.zip:*.7z:*.SFC:*.SMC:*.ZIP:*.7Z:*.Sfc:*.Smc:*.Zip"}, string{"All Files|*"}});
     auto location = openGame(dialog);
+    fastLinkCrashStep("Program::load: after openGame");
+    fastLinkDebug("Program::load dialog selected exists=%d location=%s", inode::exists(location), (const char*)location);
     if(!inode::exists(location)) return;
     gameQueue.append({dialog.option(), ";", location});
   }
 
+  fastLinkDebug("Program::load acquiring frontend lock");
+  fastLinkCrashStep("Program::load: acquire frontend lock");
   auto lock = acquire();
+  fastLinkDebug("Program::load frontend lock acquired; unload previous game begin");
   unload();
+  fastLinkDebug("Program::load unload previous game done");
   clearGameSlots();
   screenshot = {};
 
@@ -50,16 +66,35 @@ auto Program::load() -> void {
   emulator->configure("Hacks/Coprocessor/DelayedSync", settings.emulator.hack.coprocessor.delayedSync);
   emulator->configure("Hacks/Coprocessor/PreferHLE", settings.emulator.hack.coprocessor.preferHLE);
   emulator->configure("Hacks/SuperFX/Overclock", settings.emulator.hack.superfx.overclock);
+  fastLinkDebug(
+    "Program::load configured core serialization=%s coSerializable=%d runAhead=%u mode7Scale=%u perspective=%d supersample=%d mosaic=%d ppuFast=%d",
+    (const char*)settings.emulator.serialization.method,
+    co_serializable(),
+    settings.fastLink.runAhead,
+    settings.emulator.hack.ppu.mode7.scale,
+    settings.emulator.hack.ppu.mode7.perspective,
+    settings.emulator.hack.ppu.mode7.supersample,
+    settings.emulator.hack.ppu.mode7.mosaic,
+    settings.emulator.hack.ppu.fast
+  );
+  fastLinkDebug("Program::load emulator->load begin");
+    fastLinkCrashStep("Program::load: emulator load begin");
   if(!emulator->load()) {
+      fastLinkDebug("Program::load emulator->load failed");
+      fastLinkCrashStep("Program::load: emulator load failed");
     gameQueue = {};
     screenshot = {};
     clearGameSlots();
     return showMessage("Game loading failed");
   }
+  fastLinkCrashStep("Program::load: emulator load succeeded");
+  fastLinkDebug("Program::load emulator->load succeeded loaded=%d title=%s", emulator->loaded(), (const char*)emulator->title());
 
   gameQueue = {};
   screenshot = {};
   if(!verified() && emulatorSettings.warnOnUnverifiedGames.checked()) {
+    fastLinkDebug("Program::load unverified warning dialog begin");
+    fastLinkCrashStep("Program::load: unverified warning");
     //Emulator::loaded() is true at this point:
     //prevent Program::main() from calling Emulator::run() during this dialog window
     auto lock = acquire();
@@ -69,6 +104,7 @@ auto Program::load() -> void {
       "Do you wish to run the game anyway?"
     ).setAlignment(*presentation).question({"Always", "Yes", "No"});
     if(response == "No") {
+      fastLinkDebug("Program::load unverified warning cancelled");
       emulator->unload();
       screenshot = {};
       clearGameSlots();
@@ -77,11 +113,20 @@ auto Program::load() -> void {
     if(response == "Always") {
       emulatorSettings.warnOnUnverifiedGames.setChecked(false).doToggle();
     }
+    fastLinkDebug("Program::load unverified warning accepted");
   }
+  fastLinkDebug("Program::load hackCompatibility begin");
+  fastLinkCrashStep("Program::load: hackCompatibility");
   hackCompatibility();
+  fastLinkDebug("Program::load emulator->power begin");
   emulator->power();
+  fastLinkDebug("Program::load emulator->power done");
+  resetRunAheadWarmup();
+  fastLinkDebug("Program::load run-ahead warmup reset frames=%u", runAheadWarmupFrames);
   if(emulatorSettings.autoLoadStateOnLoad.checked()) {
+    fastLinkDebug("Program::load auto load state begin");
     program.loadState("Quick/Undo");
+    fastLinkDebug("Program::load auto load state done");
   }
   showMessage({
     verified() ? "Verified game loaded" : "Game loaded",
@@ -97,12 +142,16 @@ auto Program::load() -> void {
   presentation.runEmulation.setChecked().doActivate();
   presentation.updateProgramIcon();
   presentation.updateStatusIcon();
-  rewindReset();  //starts rewind state recording
-  movieMode(Movie::Mode::Inactive);  //to set initial movie menu state
+  fastLinkDebug("Program::load frontend menus/status updated");
+  fastLinkDebug("Program::load cheatFinder.restart begin");
   cheatFinder.restart();  //clear any old cheat search results
+  fastLinkDebug("Program::load cheatEditor.loadCheats begin");
   cheatEditor.loadCheats();
+  fastLinkDebug("Program::load stateManager.loadStates begin");
   stateManager.loadStates();
+  fastLinkDebug("Program::load manifestViewer.loadManifest begin");
   manifestViewer.loadManifest();
+  fastLinkDebug("Program::load tools data loaded");
 
   string games;
   if(auto& game = superFamicom) games.append(game.option, ";", game.location, "|");
@@ -112,33 +161,46 @@ auto Program::load() -> void {
   if(auto& game = sufamiTurboB) games.append(game.option, ";", game.location, "|");
   presentation.addRecentGame(games.trimRight("|", 1L));
 
+  fastLinkDebug("Program::load update video/audio effects begin");
   updateVideoPalette();
   updateVideoEffects();
   updateAudioEffects();
   updateAudioFrequency();
+  fastLinkDebug("Program::load complete");
+  fastLinkCrashStep("Program::load: complete");
 }
 
 auto Program::loadFile(string location) -> vector<uint8_t> {
   auto suffix = Location::suffix(location).downcase();
+  fastLinkDebug("Program::loadFile begin suffix=%s location=%s", (const char*)suffix, (const char*)location);
   if(suffix == ".zip") {
     Decode::ZIP archive;
     if(archive.open(location)) {
       for(auto& file : archive.file) {
         auto type = Location::suffix(file.name).downcase();
         if(type == ".sfc" || type == ".smc" || type == ".gb" || type == ".gbc" || type == ".bs" || type == ".st") {
-          return archive.extract(file);
+          auto data = archive.extract(file);
+          fastLinkDebug("Program::loadFile zip member=%s size=%u", (const char*)file.name, (uint)data.size());
+          return data;
         }
       }
     }
+    fastLinkDebug("Program::loadFile zip had no supported ROM");
     return {};
   } else if(suffix == ".7z") {
-    return LZMA::extract(location);
+    auto data = LZMA::extract(location);
+    fastLinkDebug("Program::loadFile 7z size=%u", (uint)data.size());
+    return data;
   } else {
-    return file::read(location);
+    auto data = file::read(location);
+    fastLinkDebug("Program::loadFile raw size=%u", (uint)data.size());
+    return data;
   }
 }
 
 auto Program::loadSuperFamicom(string location) -> bool {
+  fastLinkCrashStep("Program::loadSuperFamicom: begin");
+  fastLinkDebug("Program::loadSuperFamicom begin location=%s", (const char*)location);
   string manifest;
   vector<uint8_t> rom;
 
@@ -154,20 +216,28 @@ auto Program::loadSuperFamicom(string location) -> bool {
     manifest = file::read({Location::notsuffix(location), ".bml"});
     rom = loadFile(location);
   }
-  if(rom.size() < 0x8000) return false;
+  fastLinkDebug("Program::loadSuperFamicom rom size=%u manifestBytes=%u", (uint)rom.size(), (uint)manifest.size());
+  fastLinkCrashStep("Program::loadSuperFamicom: rom too small");
+  if(rom.size() < 0x8000) {
+    fastLinkDebug("Program::loadSuperFamicom failed: ROM too small");
+    return false;
+  }
 
   if((rom.size() & 0x7fff) == 512) {
     //remove copier header
     memory::move(&rom[0], &rom[512], rom.size() - 512);
     rom.resize(rom.size() - 512);
+    fastLinkDebug("Program::loadSuperFamicom removed copier header newSize=%u", (uint)rom.size());
   }
 
   if(!superFamicom.patched) superFamicom.patched = applyPatchIPS(rom, location);
   if(!superFamicom.patched) superFamicom.patched = applyPatchBPS(rom, location);
+  fastLinkDebug("Program::loadSuperFamicom patches applied=%d", superFamicom.patched);
   auto heuristics = Heuristics::SuperFamicom(rom, location);
   auto sha256 = Hash::SHA256(rom).digest();
   superFamicom.title = heuristics.title();
   superFamicom.region = heuristics.videoRegion();
+  fastLinkDebug("Program::loadSuperFamicom heuristics title=%s region=%s", (const char*)superFamicom.title, (const char*)superFamicom.region);
   if(auto document = BML::unserialize(string::read(locate("Database/Super Famicom.bml")))) {
     if(auto game = document[{"game(sha256=", sha256, ")"}]) {
       manifest = BML::serialize(game);
@@ -176,37 +246,59 @@ auto Program::loadSuperFamicom(string location) -> bool {
       superFamicom.verified = true;
     }
   }
+  fastLinkDebug("Program::loadSuperFamicom database verified=%d", superFamicom.verified);
   superFamicom.manifest = manifest ? manifest : heuristics.manifest();
   hackPatchMemory(rom);
   superFamicom.document = BML::unserialize(superFamicom.manifest);
   superFamicom.location = location;
+  fastLinkDebug("Program::loadSuperFamicom manifest parsed bytes=%u", (uint)superFamicom.manifest.size());
 
   uint offset = 0;
-  if(auto size = heuristics.programRomSize()) {
-    superFamicom.program.resize(size);
-    memory::copy(&superFamicom.program[0], &rom[offset], size);
+  auto copySegment = [&](auto& target, uint size, const char* name) -> bool {
+    if(!size) return true;
+    if(offset > rom.size() || size > rom.size() - offset) {
+      fastLinkDebug(
+        "Program::loadSuperFamicom failed: %s size=%u offset=%u rom=%u",
+        name,
+        size,
+        offset,
+        (uint)rom.size()
+      );
+      return false;
+    }
+
+    target.resize(size);
+    memory::copy(&target[0], &rom[offset], size);
     offset += size;
+    return true;
+  };
+
+  if(auto size = heuristics.programRomSize()) {
+    if(!copySegment(superFamicom.program, size, "program.rom")) return false;
   }
   if(auto size = heuristics.dataRomSize()) {
-    superFamicom.data.resize(size);
-    memory::copy(&superFamicom.data[0], &rom[offset], size);
-    offset += size;
+    if(!copySegment(superFamicom.data, size, "data.rom")) return false;
   }
   if(auto size = heuristics.expansionRomSize()) {
-    superFamicom.expansion.resize(size);
-    memory::copy(&superFamicom.expansion[0], &rom[offset], size);
-    offset += size;
+    if(!copySegment(superFamicom.expansion, size, "expansion.rom")) return false;
   }
   if(auto size = heuristics.firmwareRomSize()) {
-    superFamicom.firmware.resize(size);
-    memory::copy(&superFamicom.firmware[0], &rom[offset], size);
-    offset += size;
+    if(!copySegment(superFamicom.firmware, size, "firmware.rom")) return false;
   }
 
+  fastLinkDebug(
+    "Program::loadSuperFamicom done program=%u data=%u expansion=%u firmware=%u",
+    (uint)superFamicom.program.size(),
+    (uint)superFamicom.data.size(),
+    (uint)superFamicom.expansion.size(),
+    (uint)superFamicom.firmware.size()
+  );
+  fastLinkCrashStep("Program::loadSuperFamicom: complete");
   return true;
 }
 
 auto Program::loadGameBoy(string location) -> bool {
+  fastLinkCrashStep("Program::loadGameBoy: begin");
   string manifest;
   vector<uint8_t> rom;
 
@@ -239,10 +331,12 @@ auto Program::loadGameBoy(string location) -> bool {
   gameBoy.location = location;
 
   gameBoy.program = rom;
+  fastLinkCrashStep("Program::loadGameBoy: complete");
   return true;
 }
 
 auto Program::loadBSMemory(string location) -> bool {
+  fastLinkCrashStep("Program::loadBSMemory: begin");
   string manifest;
   vector<uint8_t> rom;
 
@@ -270,10 +364,12 @@ auto Program::loadBSMemory(string location) -> bool {
   bsMemory.location = location;
 
   bsMemory.program = rom;
+  fastLinkCrashStep("Program::loadBSMemory: complete");
   return true;
 }
 
 auto Program::loadSufamiTurboA(string location) -> bool {
+  fastLinkCrashStep("Program::loadSufamiTurboA: begin");
   string manifest;
   vector<uint8_t> rom;
 
@@ -300,10 +396,12 @@ auto Program::loadSufamiTurboA(string location) -> bool {
   sufamiTurboA.location = location;
 
   sufamiTurboA.program = rom;
+  fastLinkCrashStep("Program::loadSufamiTurboA: complete");
   return true;
 }
 
 auto Program::loadSufamiTurboB(string location) -> bool {
+  fastLinkCrashStep("Program::loadSufamiTurboB: begin");
   string manifest;
   vector<uint8_t> rom;
 
@@ -330,6 +428,7 @@ auto Program::loadSufamiTurboB(string location) -> bool {
   sufamiTurboB.location = location;
 
   sufamiTurboB.program = rom;
+  fastLinkCrashStep("Program::loadSufamiTurboB: complete");
   return true;
 }
 
@@ -339,40 +438,64 @@ auto Program::save() -> void {
 }
 
 auto Program::reset() -> void {
-  if(!emulator->loaded()) return;
-  rewindReset();  //don't allow rewinding past a reset point
+  if(!emulator->loaded()) {
+    fastLinkDebug("Program::reset ignored: no game loaded");
+    return;
+  }
+  fastLinkDebug("Program::reset begin");
   hackCompatibility();
+  fastLinkDebug("Program::reset emulator->reset begin");
   emulator->reset();
+  fastLinkDebug("Program::reset emulator->reset done");
+  resetRunAheadWarmup();
   showMessage("Game reset");
+  fastLinkDebug("Program::reset complete warmup=%u", runAheadWarmupFrames);
 }
 
 auto Program::power() -> void {
-  if(!emulator->loaded()) return;
-  rewindReset();
+  if(!emulator->loaded()) {
+    fastLinkDebug("Program::power ignored: no game loaded");
+    return;
+  }
+  fastLinkDebug("Program::power begin");
   hackCompatibility();
+  fastLinkDebug("Program::power emulator->power begin");
   emulator->power();
+  fastLinkDebug("Program::power emulator->power done");
+  resetRunAheadWarmup();
   showMessage("Power cycle");
+  fastLinkDebug("Program::power complete warmup=%u", runAheadWarmupFrames);
 }
 
 auto Program::unload() -> void {
-  if(!emulator->loaded()) return;
+  if(!emulator->loaded()) {
+    fastLinkDebug("Program::unload ignored: no game loaded");
+    return;
+  }
+  fastLinkDebug("Program::unload begin title=%s", (const char*)emulator->title());
   fastLinkRAMTraceService.clearSnapshot();
   //todo: video.clear() is not working on macOS/OpenGL 3.2
+  fastLinkDebug("Program::unload clear video begin");
   if(auto [output, length] = video.acquire(1, 1); output) {
     *output = 0;
     video.release();
     video.output();
   }
+  fastLinkDebug("Program::unload clear audio begin");
   audio.clear();
-  rewindReset();  //free up memory that is no longer needed
-  movieStop();  //in case a movie is currently being played or recorded
+  fastLinkDebug("Program::unload save cheats/tools begin");
   cheatEditor.saveCheats();
   toolsWindow.setVisible(false);
   if(emulatorSettings.autoSaveStateOnUnload.checked()) {
+    fastLinkDebug("Program::unload auto save undo state begin");
     saveUndoState();
+    fastLinkDebug("Program::unload auto save undo state done");
   }
   screenshot = {};
+  runAheadWarmupFrames = 0;
+  fastLinkDebug("Program::unload emulator->unload begin");
   emulator->unload();
+  fastLinkDebug("Program::unload emulator->unload done");
   showMessage("Game unloaded");
   superFamicom = {};
   gameBoy = {};
@@ -380,11 +503,12 @@ auto Program::unload() -> void {
   sufamiTurboA = {};
   sufamiTurboB = {};
   presentation.setTitle({Emulator::Name, " v", Emulator::Version});
-  presentation.resetSystem.setEnabled(false);
+  presentation.resetSystem.setEnabled(true);
   presentation.unloadGame.setEnabled(false);
   presentation.toolsMenu.setVisible(false);
   presentation.updateProgramIcon();
   presentation.updateStatusIcon();
+  fastLinkDebug("Program::unload complete");
 }
 
 //a game is considered verified if the game plus its slot(s) are found in the games database

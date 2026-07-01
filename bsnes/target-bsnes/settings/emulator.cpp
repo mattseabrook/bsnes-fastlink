@@ -92,48 +92,4 @@ auto EmulatorSettings::create() -> void {
   });
 
   fastForwardSpacer.setColor({192, 192, 192});
-
-  rewindLabel.setText("Rewind").setFont(Font().setBold());
-
-  rewindFrequencyLabel.setText("Frequency:");
-  rewindFrequencyOption.append(ComboButtonItem().setText("Disabled"));
-  rewindFrequencyOption.append(ComboButtonItem().setText("Every 10 frames"));
-  rewindFrequencyOption.append(ComboButtonItem().setText("Every 20 frames"));
-  rewindFrequencyOption.append(ComboButtonItem().setText("Every 30 frames"));
-  rewindFrequencyOption.append(ComboButtonItem().setText("Every 40 frames"));
-  rewindFrequencyOption.append(ComboButtonItem().setText("Every 50 frames"));
-  rewindFrequencyOption.append(ComboButtonItem().setText("Every 60 frames"));
-  if(settings.rewind.frequency ==  0) rewindFrequencyOption.item(0).setSelected();
-  if(settings.rewind.frequency == 10) rewindFrequencyOption.item(1).setSelected();
-  if(settings.rewind.frequency == 20) rewindFrequencyOption.item(2).setSelected();
-  if(settings.rewind.frequency == 30) rewindFrequencyOption.item(3).setSelected();
-  if(settings.rewind.frequency == 40) rewindFrequencyOption.item(4).setSelected();
-  if(settings.rewind.frequency == 50) rewindFrequencyOption.item(5).setSelected();
-  if(settings.rewind.frequency == 60) rewindFrequencyOption.item(6).setSelected();
-  rewindFrequencyOption.onChange([&] {
-    settings.rewind.frequency = rewindFrequencyOption.selected().offset() * 10;
-    program.rewindReset();
-  });
-
-  rewindLengthLabel.setText("Length:");
-  rewindLengthOption.append(ComboButtonItem().setText( "10 states"));
-  rewindLengthOption.append(ComboButtonItem().setText( "20 states"));
-  rewindLengthOption.append(ComboButtonItem().setText( "40 states"));
-  rewindLengthOption.append(ComboButtonItem().setText( "80 states"));
-  rewindLengthOption.append(ComboButtonItem().setText("160 states"));
-  rewindLengthOption.append(ComboButtonItem().setText("320 states"));
-  if(settings.rewind.length ==  10) rewindLengthOption.item(0).setSelected();
-  if(settings.rewind.length ==  20) rewindLengthOption.item(1).setSelected();
-  if(settings.rewind.length ==  40) rewindLengthOption.item(2).setSelected();
-  if(settings.rewind.length ==  80) rewindLengthOption.item(3).setSelected();
-  if(settings.rewind.length == 160) rewindLengthOption.item(4).setSelected();
-  if(settings.rewind.length == 320) rewindLengthOption.item(5).setSelected();
-  rewindLengthOption.onChange([&] {
-    settings.rewind.length = 10 << rewindLengthOption.selected().offset();
-    program.rewindReset();
-  });
-
-  rewindMute.setText("Mute while rewinding").setChecked(settings.rewind.mute).onToggle([&] {
-    settings.rewind.mute = rewindMute.checked();
-  });
 }

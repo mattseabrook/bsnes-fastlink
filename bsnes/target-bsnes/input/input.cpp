@@ -19,10 +19,13 @@ auto InputMapping::bind() -> void {
 
     for(auto& device : inputManager.devices) {
       if(id != device->id()) continue;
+      if(group >= device->size()) continue;
+      if(input >= device->group(group).size()) continue;
 
       binding.device = device;
       binding.group = group;
       binding.input = input;
+      binding.value = device->group(group).input(input).valueAddress();
       binding.qualifier = Qualifier::None;
       if(qualifier == "Lo") binding.qualifier = Qualifier::Lo;
       if(qualifier == "Hi") binding.qualifier = Qualifier::Hi;
@@ -120,7 +123,7 @@ auto InputMapping::poll() -> int16 {
     auto& group = binding.group;
     auto& input = binding.input;
     auto& qualifier = binding.qualifier;
-    auto value = device->group(group).input(input).value();
+    auto value = binding.value ? *binding.value : device->group(group).input(input).value();
 
     if(isDigital()) {
       boolean output;
@@ -266,6 +269,7 @@ auto InputManager::initialize() -> void {
   }
 
   bindHotkeys();
+  rebuildMappingCache();
   poll();
 }
 
@@ -364,6 +368,34 @@ auto InputManager::mapping(uint port, uint device, uint input) -> maybe<InputMap
   return nothing;
 }
 
+auto InputManager::cachedMapping(uint port, uint device, uint input) -> maybe<InputMapping&> {
+  if(port < MappingCachePorts && device < MappingCacheDevices && input < MappingCacheInputs) {
+    if(auto mapping = _mappingCache[port][device][input]) return *mapping;
+  }
+  return mapping(port, device, input);
+}
+
+auto InputManager::rebuildMappingCache() -> void {
+  for(uint port : range(MappingCachePorts)) {
+    for(uint device : range(MappingCacheDevices)) {
+      for(uint input : range(MappingCacheInputs)) {
+        _mappingCache[port][device][input] = nullptr;
+      }
+    }
+  }
+
+  for(auto& inputPort : ports) {
+    if(inputPort.id >= MappingCachePorts) continue;
+    for(auto& inputDevice : inputPort.devices) {
+      if(inputDevice.id >= MappingCacheDevices) continue;
+      for(uint inputID : range(inputDevice.mappings.size())) {
+        if(inputID >= MappingCacheInputs) break;
+        _mappingCache[inputPort.id][inputDevice.id][inputID] = &inputDevice.mappings[inputID];
+      }
+    }
+  }
+}
+
 auto InputManager::findMouse() -> shared_pointer<HID::Device> {
   for(auto& device : devices) {
     if(device->isMouse()) return device;
@@ -393,8 +425,16 @@ auto InputManager::startWorker() -> void {
           knownDevices = polledDevices;
         }
       }
-      //poll at ~1000Hz for minimal input latency
-      ::std::this_thread::sleep_for(::std::chrono::milliseconds(1));
+      auto target = chrono::microsecond() + max(100u, settings.fastLink.inputPollMicroseconds);
+      while(_pollRunning && chrono::microsecond() < target) {
+        #if defined(PLATFORM_WINDOWS)
+        YieldProcessor();
+        #elif defined(__SSE2__)
+        __builtin_ia32_pause();
+        #else
+        ::std::this_thread::yield();
+        #endif
+      }
     }
   });
 }

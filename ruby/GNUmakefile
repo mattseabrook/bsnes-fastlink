@@ -10,7 +10,7 @@ pkg_check = \
 
 ifeq ($(ruby),)
   ifeq ($(platform),windows)
-    ruby += video.wgl video.direct3d video.directdraw video.gdi
+    ruby += video.vulkan
     ruby += audio.asio audio.wasapi audio.xaudio2 audio.directsound audio.waveout
     ruby += input.windows
   else ifeq ($(platform),macos)
@@ -50,9 +50,9 @@ ruby.flags += $(if $(findstring input.sdl,$(ruby)),$(shell sdl2-config --cflags)
 ruby.options :=
 
 ruby.options += $(if $(findstring video.cgl,$(ruby)),-framework OpenGL)
-ruby.options += $(if $(findstring video.direct3d,$(ruby)),-ld3d9)
 ruby.options += $(if $(findstring video.directdraw,$(ruby)),-lddraw)
 ruby.options += $(if $(findstring video.glx,$(ruby)),-lGL)
+ruby.options += $(if $(findstring video.vulkan,$(ruby)),$(if $(filter windows,$(platform)),-lvulkan-1,-lvulkan))
 ruby.options += $(if $(findstring video.wgl,$(ruby)),-lopengl32)
 ruby.options += $(if $(findstring video.xvideo,$(ruby)),-lXv)
 

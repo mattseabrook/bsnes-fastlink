@@ -12,6 +12,7 @@ struct Input {
 
   auto name() const -> string { return _name; }
   auto value() const -> int16_t { return _value; }
+  auto valueAddress() const -> const int16_t* { return &_value; }
   auto setValue(int16_t value) -> void { _value = value; }
 
 private:

@@ -84,6 +84,7 @@ struct Presentation : Window {
       MenuSeparator settingsSeparatorA{&settingsMenu};
       MenuCheckItem muteAudio{&settingsMenu};
       MenuCheckItem showStatusBar{&settingsMenu};
+      MenuCheckItem ramTraceServer{&settingsMenu};
       MenuSeparator settingsSeparatorB{&settingsMenu};
       MenuItem videoSettings{&settingsMenu};
       MenuItem audioSettings{&settingsMenu};
@@ -110,11 +111,6 @@ struct Presentation : Window {
         MenuRadioItem pauseEmulation{&runMenu};
         MenuRadioItem frameAdvance{&runMenu};
         Group runGroup{&runEmulation, &pauseEmulation, &frameAdvance};
-      Menu movieMenu{&toolsMenu};
-        MenuItem moviePlay{&movieMenu};
-        MenuItem movieRecord{&movieMenu};
-        MenuItem movieRecordFromBeginning{&movieMenu};
-        MenuItem movieStop{&movieMenu};
       MenuItem captureScreenshot{&toolsMenu};
       MenuSeparator toolsSeparatorC{&toolsMenu};
       MenuItem cheatFinder{&toolsMenu};

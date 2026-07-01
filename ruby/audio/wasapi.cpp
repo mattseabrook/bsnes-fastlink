@@ -1,3 +1,10 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <avrt.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -5,6 +12,8 @@
 #include <devicetopology.h>
 #include <endpointvolume.h>
 #include <functiondiscoverykeys_devpkey.h>
+#include <cstdarg>
+#include <cstdio>
 
 // WASAPI GUIDs (not provided by import libs with clang-cl)
 #ifndef __MINGW32__
@@ -15,25 +24,47 @@ DEFINE_GUID(IID_IAudioClient,         0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1, 0x78, 0x
 DEFINE_GUID(IID_IAudioRenderClient,   0xF294ACFC, 0x3146, 0x4483, 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2);
 #endif
 
+namespace {
+auto WASAPITrace(const char* format, ...) -> void {
+}
+}
+
 struct AudioWASAPI : AudioDriver {
   AudioWASAPI& self = *this;
   AudioWASAPI(Audio& super) : AudioDriver(super) { construct(); }
   ~AudioWASAPI() { destruct(); }
 
   auto create() -> bool override {
-    super.setExclusive(false);
-    super.setDevice(hasDevices().first());
-    super.setBlocking(false);
-    super.setChannels(2);
-    super.setFrequency(48000);
-    super.setLatency(20);
-    return initialize();
+    WASAPITrace("create begin devices=%u", (uint)self.devices.size());
+    if(!self.devices) {
+      WASAPITrace("create failed: no active render devices");
+      return false;
+    }
+    self.exclusive = false;
+    self.device = hasDevices().first();
+    self.blocking = false;
+    self.channels = 2;
+    self.frequency = 48000;
+    self.latency = 0;
+    auto result = initialize();
+    WASAPITrace(
+      "create done result=%d ready=%d device=%s frequency=%u channels=%u latency=%u exclusive=%d blocking=%d",
+      result,
+      self.isReady,
+      (const char*)self.device,
+      self.frequency,
+      self.channels,
+      self.latency,
+      self.exclusive,
+      self.blocking
+    );
+    return result;
   }
 
   auto driver() -> string override { return "WASAPI"; }
   auto ready() -> bool override { return self.isReady; }
 
-  auto hasExclusive() -> bool override { return true; }
+  auto hasExclusive() -> bool override { return false; }
   auto hasBlocking() -> bool override { return true; }
 
   auto hasDevices() -> vector<string> override {
@@ -54,34 +85,82 @@ struct AudioWASAPI : AudioDriver {
     return {0, 20, 40, 60, 80, 100};
   }
 
-  auto setExclusive(bool exclusive) -> bool override { return initialize(); }
+  auto setExclusive(bool exclusive) -> bool override { return exclusive == false; }
   auto setDevice(string device) -> bool override { return initialize(); }
   auto setBlocking(bool blocking) -> bool override { return true; }
   auto setFrequency(uint frequency) -> bool override { return initialize(); }
   auto setLatency(uint latency) -> bool override { return initialize(); }
 
   auto clear() -> void override {
+    static uint clearTraceCount = 0;
+    if(clearTraceCount++ < 40) WASAPITrace("clear ready=%d audioClient=%p", self.isReady, (void*)self.audioClient);
     self.queue.read = 0;
     self.queue.write = 0;
     self.queue.count = 0;
+    if(!self.audioClient) return;
     self.audioClient->Stop();
     self.audioClient->Reset();
     self.audioClient->Start();
   }
 
   auto output(const double samples[]) -> void override {
+    static uint outputTraceCount = 0;
+    bool traceOutput = outputTraceCount++ < 80;
+    if(traceOutput) {
+      WASAPITrace(
+        "output begin ready=%d audioClient=%p renderClient=%p event=%p queue=%u",
+        self.isReady,
+        (void*)self.audioClient,
+        (void*)self.renderClient,
+        (void*)self.eventHandle,
+        self.queue.count
+      );
+    }
+    if(!self.isReady || !self.audioClient || !self.renderClient || !self.eventHandle) {
+      if(traceOutput) WASAPITrace("output skipped: not ready");
+      return;
+    }
+
+    uint32_t quantum = (uint32_t)(((uint64_t)self.frequency * self.devicePeriod + 9'999'999) / 10'000'000);
+    if(quantum == 0) quantum = self.bufferSize / 8;
+    if(quantum < 16u) quantum = 16u;
+    if(self.bufferSize && quantum > self.bufferSize) quantum = self.bufferSize;
+
+    uint32_t queueLimit = max(64u, quantum * 2);
+    if(self.bufferSize && queueLimit > self.bufferSize) queueLimit = self.bufferSize;
+    if(queueLimit > 65535u) queueLimit = 65535u;
+
+    // Pace against one device period worth of audio instead of the entire endpoint buffer.
+    // Shared-mode WASAPI can expose a large buffer, and waiting to fill it first creates a fixed startup delay.
+    if(self.queue.count >= queueLimit) {
+      if(self.blocking) {
+        while(self.queue.count >= queueLimit) {
+          if(WaitForSingleObject(self.eventHandle, INFINITE) != WAIT_OBJECT_0) break;
+          write();
+        }
+      } else {
+        if(WaitForSingleObject(self.eventHandle, 0) == WAIT_OBJECT_0) {
+          write();
+        }
+        while(self.queue.count >= queueLimit) {
+          self.queue.read++;
+          self.queue.count--;
+        }
+      }
+    }
+
     for(uint n : range(self.channels)) {
-      self.queue.samples[self.queue.write][n] = samples[n];
+      self.queue.samples[self.queue.write][n] = n < 2 ? samples[n] : 0.0;
     }
     self.queue.write++;
     self.queue.count++;
 
-    auto quantum = max(16u, self.bufferSize / 8);
-    if(self.queue.count >= (self.blocking ? self.bufferSize : quantum)) {
+    if(self.queue.count >= quantum) {
       if(WaitForSingleObject(self.eventHandle, self.blocking ? INFINITE : 0) == WAIT_OBJECT_0 || !self.blocking) {
         write();
       }
     }
+    if(traceOutput) WASAPITrace("output done queue=%u quantum=%u limit=%u", self.queue.count, quantum, queueLimit);
   }
 
 private:
@@ -92,10 +171,19 @@ private:
   vector<Device> devices;
 
   auto construct() -> bool {
-    if(CoCreateInstance(CLSID_MMDeviceEnumerator, nullptr, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void**)&self.enumerator) != S_OK) return false;
+    WASAPITrace("construct begin");
+    HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator, nullptr, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void**)&self.enumerator);
+    if(hr != S_OK) {
+      WASAPITrace("construct CoCreateInstance failed hr=0x%08lx", (unsigned long)hr);
+      return false;
+    }
 
     IMMDevice* defaultDeviceContext = nullptr;
-    if(self.enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &defaultDeviceContext) != S_OK) return false;
+    hr = self.enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &defaultDeviceContext);
+    if(hr != S_OK) {
+      WASAPITrace("construct GetDefaultAudioEndpoint failed hr=0x%08lx", (unsigned long)hr);
+      return false;
+    }
 
     Device defaultDevice;
     LPWSTR defaultDeviceString = nullptr;
@@ -104,10 +192,19 @@ private:
     CoTaskMemFree(defaultDeviceString);
 
     IMMDeviceCollection* deviceCollection = nullptr;
-    if(self.enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &deviceCollection) != S_OK) return false;
+    hr = self.enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &deviceCollection);
+    if(hr != S_OK) {
+      WASAPITrace("construct EnumAudioEndpoints failed hr=0x%08lx", (unsigned long)hr);
+      return false;
+    }
 
     uint deviceCount = 0;
-    if(deviceCollection->GetCount(&deviceCount) != S_OK) return false;
+    hr = deviceCollection->GetCount(&deviceCount);
+    if(hr != S_OK) {
+      WASAPITrace("construct GetCount failed hr=0x%08lx", (unsigned long)hr);
+      return false;
+    }
+    WASAPITrace("construct active device count=%u", deviceCount);
 
     for(uint deviceIndex : range(deviceCount)) {
       IMMDevice* deviceContext = nullptr;
@@ -134,79 +231,123 @@ private:
     }
 
     deviceCollection->Release();
+    WASAPITrace("construct done devices=%u default=%s", (uint)self.devices.size(), self.devices ? (const char*)self.devices.first().name : "");
     return true;
   }
 
   auto destruct() -> void {
+    WASAPITrace("destruct begin");
     terminate();
 
     if(self.enumerator) {
       self.enumerator->Release();
       self.enumerator = nullptr;
     }
+    WASAPITrace("destruct done");
   }
 
   auto initialize() -> bool {
+    WASAPITrace("initialize begin device=%s requestedFrequency=%u requestedLatency=%u", (const char*)self.device, self.frequency, self.latency);
     terminate();
 
     string deviceID;
     if(auto index = self.devices.find([&](auto& device) { return device.name == self.device; })) {
       deviceID = self.devices[*index].id;
     } else {
+      WASAPITrace("initialize failed: device not found name=%s", (const char*)self.device);
       return false;
     }
 
     utf16_t deviceString(deviceID);
-    if(self.enumerator->GetDevice(deviceString, &self.audioDevice) != S_OK) return false;
-
-    if(self.audioDevice->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr, (void**)&self.audioClient) != S_OK) return false;
-
-    WAVEFORMATEXTENSIBLE waveFormat{};
-    if(self.exclusive) {
-      IPropertyStore* propertyStore = nullptr;
-      if(self.audioDevice->OpenPropertyStore(STGM_READ, &propertyStore) != S_OK) return false;
-      PROPVARIANT propVariant;
-      if(propertyStore->GetValue(PKEY_AudioEngine_DeviceFormat, &propVariant) != S_OK) return false;
-      waveFormat = *(WAVEFORMATEXTENSIBLE*)propVariant.blob.pBlobData;
-      propertyStore->Release();
-      if(self.audioClient->GetDevicePeriod(nullptr, &self.devicePeriod) != S_OK) return false;
-      auto latency = max(self.devicePeriod, (REFERENCE_TIME)self.latency * 10'000);  //1ms to 100ns units
-      auto result = self.audioClient->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, latency, latency, &waveFormat.Format, nullptr);
-      if(result == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
-        if(self.audioClient->GetBufferSize(&self.bufferSize) != S_OK) return false;
-        self.audioClient->Release();
-        latency = (REFERENCE_TIME)(10'000 * 1'000 * self.bufferSize / waveFormat.Format.nSamplesPerSec);
-        if(self.audioDevice->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr, (void**)&self.audioClient) != S_OK) return false;
-        result = self.audioClient->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, latency, latency, &waveFormat.Format, nullptr);
-      }
-      if(result != S_OK) return false;
-      DWORD taskIndex = 0;
-      self.taskHandle = AvSetMmThreadCharacteristics(L"Pro Audio", &taskIndex);
-    } else {
-      WAVEFORMATEX* waveFormatEx = nullptr;
-      if(self.audioClient->GetMixFormat(&waveFormatEx) != S_OK) return false;
-      waveFormat = *(WAVEFORMATEXTENSIBLE*)waveFormatEx;
-      CoTaskMemFree(waveFormatEx);
-      if(self.audioClient->GetDevicePeriod(&self.devicePeriod, nullptr)) return false;
-      auto latency = max(self.devicePeriod, (REFERENCE_TIME)self.latency * 10'000);  //1ms to 100ns units
-      if(self.audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, latency, 0, &waveFormat.Format, nullptr) != S_OK) return false;
+    HRESULT hr = self.enumerator->GetDevice(deviceString, &self.audioDevice);
+    if(hr != S_OK) {
+      WASAPITrace("initialize GetDevice failed hr=0x%08lx", (unsigned long)hr);
+      return false;
     }
 
-    self.eventHandle = CreateEvent(nullptr, false, false, nullptr);
-    if(self.audioClient->SetEventHandle(self.eventHandle) != S_OK) return false;
-    if(self.audioClient->GetService(IID_IAudioRenderClient, (void**)&self.renderClient) != S_OK) return false;
-    if(self.audioClient->GetBufferSize(&self.bufferSize) != S_OK) return false;
+    hr = self.audioDevice->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr, (void**)&self.audioClient);
+    if(hr != S_OK) {
+      WASAPITrace("initialize Activate IAudioClient failed hr=0x%08lx", (unsigned long)hr);
+      return false;
+    }
 
-    self.channels = waveFormat.Format.nChannels;
-    self.frequency = waveFormat.Format.nSamplesPerSec;
-    self.mode = waveFormat.SubFormat.Data1;
-    self.precision = waveFormat.Format.wBitsPerSample;
+    WAVEFORMATEX* waveFormat = nullptr;
+    hr = self.audioClient->GetMixFormat(&waveFormat);
+    if(hr != S_OK) {
+      WASAPITrace("initialize GetMixFormat failed hr=0x%08lx", (unsigned long)hr);
+      return false;
+    }
+    WASAPITrace("initialize mix format tag=%u channels=%u frequency=%lu bits=%u", waveFormat->wFormatTag, waveFormat->nChannels, (unsigned long)waveFormat->nSamplesPerSec, waveFormat->wBitsPerSample);
+    hr = self.audioClient->GetDevicePeriod(&self.devicePeriod, nullptr);
+    if(hr != S_OK) {
+      WASAPITrace("initialize GetDevicePeriod failed hr=0x%08lx", (unsigned long)hr);
+      CoTaskMemFree(waveFormat);
+      return false;
+    }
+    auto latency = max(self.devicePeriod, (REFERENCE_TIME)self.latency * 10'000);  //1ms to 100ns units
+    WASAPITrace("initialize shared-mode begin devicePeriod100ns=%lld latency100ns=%lld", (long long)self.devicePeriod, (long long)latency);
+    hr = self.audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, latency, 0, waveFormat, nullptr);
+    if(hr != S_OK) {
+      WASAPITrace("initialize shared-mode failed hr=0x%08lx", (unsigned long)hr);
+      CoTaskMemFree(waveFormat);
+      return false;
+    }
+    WASAPITrace("initialize shared-mode ok");
+
+    self.eventHandle = CreateEvent(nullptr, false, false, nullptr);
+    if(!self.eventHandle) {
+      WASAPITrace("initialize CreateEvent failed gle=%lu", (unsigned long)GetLastError());
+      CoTaskMemFree(waveFormat);
+      return false;
+    }
+    hr = self.audioClient->SetEventHandle(self.eventHandle);
+    if(hr != S_OK) {
+      WASAPITrace("initialize SetEventHandle failed hr=0x%08lx", (unsigned long)hr);
+      CoTaskMemFree(waveFormat);
+      return false;
+    }
+    hr = self.audioClient->GetService(IID_IAudioRenderClient, (void**)&self.renderClient);
+    if(hr != S_OK) {
+      WASAPITrace("initialize GetService render failed hr=0x%08lx", (unsigned long)hr);
+      CoTaskMemFree(waveFormat);
+      return false;
+    }
+    hr = self.audioClient->GetBufferSize(&self.bufferSize);
+    if(hr != S_OK) {
+      WASAPITrace("initialize GetBufferSize failed hr=0x%08lx", (unsigned long)hr);
+      CoTaskMemFree(waveFormat);
+      return false;
+    }
+
+    self.channels = waveFormat->nChannels;
+    self.frequency = waveFormat->nSamplesPerSec;
+    self.mode = waveFormat->wFormatTag;
+    if(waveFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE && waveFormat->cbSize >= 22) {
+      auto extensible = (WAVEFORMATEXTENSIBLE*)waveFormat;
+      self.mode = extensible->SubFormat.Data1;
+    }
+    self.precision = waveFormat->wBitsPerSample;
+    CoTaskMemFree(waveFormat);
 
     clear();
-    return self.isReady = true;
+    self.isReady = true;
+    WASAPITrace(
+      "initialize done ready=%d channels=%u frequency=%u mode=%u precision=%u bufferSize=%lu devicePeriod100ns=%lld shared=1",
+      self.isReady,
+      self.channels,
+      self.frequency,
+      self.mode,
+      self.precision,
+      (unsigned long)self.bufferSize,
+      (long long)self.devicePeriod
+    );
+    return true;
   }
 
   auto terminate() -> void {
+    if(self.isReady || self.audioClient || self.renderClient || self.eventHandle) {
+      WASAPITrace("terminate begin ready=%d audioClient=%p renderClient=%p event=%p", self.isReady, (void*)self.audioClient, (void*)self.renderClient, (void*)self.eventHandle);
+    }
     self.isReady = false;
     if(self.audioClient) self.audioClient->Stop();
     if(self.renderClient) self.renderClient->Release(), self.renderClient = nullptr;
@@ -214,9 +355,15 @@ private:
     if(self.audioDevice) self.audioDevice->Release(), self.audioDevice = nullptr;
     if(self.eventHandle) CloseHandle(self.eventHandle), self.eventHandle = nullptr;
     if(self.taskHandle) AvRevertMmThreadCharacteristics(self.taskHandle), self.taskHandle = nullptr;
+    WASAPITrace("terminate done");
   }
 
   auto write() -> void {
+    if(!self.audioClient || !self.renderClient) return;
+    static uint writeTraceCount = 0;
+    bool traceWrite = writeTraceCount++ < 80;
+    if(traceWrite) WASAPITrace("write begin queue=%u bufferSize=%lu exclusive=%d", self.queue.count, (unsigned long)self.bufferSize, self.exclusive);
+
     uint32_t available = self.bufferSize;
     if(!self.exclusive) {
       uint32_t padding = 0;
@@ -258,6 +405,7 @@ private:
         }
       }
       self.renderClient->ReleaseBuffer(length, bufferFlags);
+      if(traceWrite) WASAPITrace("write ReleaseBuffer length=%lu flags=%u remainingQueue=%u", (unsigned long)length, bufferFlags, self.queue.count);
     }
   }
 

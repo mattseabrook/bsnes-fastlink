@@ -1,11 +1,77 @@
-bsnes
-=====
+bsnes-fastlink
+==============
 
 ![bsnes logo](bsnes/target-bsnes/resource/logo.png)
 
-bsnes is a multi-platform Super Nintendo (Super Famicom) emulator, originally
-developed by Near, which focuses on performance,
-features, and ease of use.
+bsnes-fastlink is a Windows/Vulkan-focused fork of bsnes tuned for standard
+play and speedrun practice, with the priority on reducing input-to-photon
+latency while preserving the core SNES emulation behavior.
+
+This fork is based on bsnes, originally developed by Near.
+
+Latest FastLink Changes
+-----------------------
+
+The latest play-testing changes from `Play-testing v1` center the Windows build
+around the low-latency path:
+
+  - Added the native `Win32 Vulkan` video backend and made it the default on
+    Windows.
+  - Added selectable Vulkan present behavior (`Immediate`, `Mailbox`, `FIFO`)
+    and configurable swapchain image count for queue-depth control.
+  - Added the native `Win32 Raw Input` backend with a dedicated high-priority
+    input thread, atomic keyboard/controller state, and RetroUSB controller
+    mapping.
+  - Added the FastLink RAM Trace localhost HTTP service on `127.0.0.1:9000`,
+    serving 128 KiB WRAM snapshots with CORS headers for the Spectra prototype.
+  - Updated WASAPI defaults for shared-mode, nonblocking, 48000 Hz output so
+    other programs can keep using the sound device.
+  - Added FastLink configuration keys for RAM Trace, run-ahead requests, input
+    polling, thread affinity, timer resolution, software frame pacing, and
+    low-latency defaults.
+  - Enabled HD Mode 7 defaults in this fork: scale defaults to 4x, perspective
+    correction is on, mosaic handling is on, and supersampling is off by default
+    for speed.
+  - Disabled shader/software-filter defaults on the Windows fast path to avoid
+    extra frame work.
+  - Removed the old Direct3D 9 runtime path from this fork's Windows build.
+
+Run-Ahead Status
+----------------
+
+`FastLink/RunAhead` is exposed in the config and clamped to 0-4 frames. The
+current stable Windows build only executes run-ahead when the coroutine backend
+reports stack serialization support. On the current Windows fiber backend that
+support is not available, so run-ahead requests are safely ignored instead of
+using the crash-prone path.
+
+RAM Trace HTTP API
+------------------
+
+RAM Trace is controlled by `FastLink/RAMTraceServer` in the config. When
+enabled, the service listens on localhost port `9000` and returns a raw 128 KiB
+WRAM snapshot suitable for local tools such as
+`research/snes9x-fastlink/fastlink-spectra/prototype.html`.
+
+The service uses a separate low-priority thread, short socket timeouts,
+`TCP_NODELAY`, and triple-buffered snapshots so local HTTP reads do not stall the
+emulation frame path.
+
+Windows Defaults
+----------------
+
+On Windows, this fork normalizes old or unsafe settings back to the FastLink
+runtime path:
+
+  - Video driver: `Win32 Vulkan`
+  - Video present mode: `Mailbox` by default when available
+  - Video swapchain images: clamped to 2-4
+  - Audio driver: WASAPI when available
+  - Audio exclusive mode: disabled for WASAPI shared-device compatibility
+  - Audio blocking: disabled
+  - Native file dialogs: enabled
+  - PPU fast path: enabled
+  - Software filters: disabled by default on the fast path
 
 Unique Features
 ---------------
@@ -34,11 +100,11 @@ Standard Features
   - Several built-in software filters, including HQ2x (by MaxSt) and snes_ntsc (by blargg)
   - Adaptive sync and dynamic rate control for perfect audio/video synchronization
   - Just-in-time input polling for minimal input latency
-  - Run-ahead support for removing internal game engine input latency
-  - Support for Direct3D exclusive mode video
-  - Support for WASAPI exclusive mode audio
+  - Vulkan-focused low-latency video output on Windows
+  - Shared-mode WASAPI audio path for low-latency playback while other programs keep audio access
+  - Low-latency Win32 Raw Input path
+  - Localhost RAM Trace HTTP service for external practice tooling
   - Periodic auto-saving of game saves
-  - Auto-saving of states when unloading games, and auto-resuming of states when reloading games
   - Sprite limit disable support
   - Cubic audio interpolation support
   - Optional high-level emulation of most SNES coprocessors
@@ -47,25 +113,27 @@ Standard Features
   - Frame advance support
   - Screenshot support
   - Cheat code search support
-  - Movie recording and playback support
-  - Rewind support
   - HiDPI support
   - Multi-monitor support
   - Turbo support for controller inputs
+
+Build
+-----
+
+The Windows build is produced from Linux with:
+
+```sh
+./build_windows.sh build
+```
+
+The build script writes `build_win/bsnes.exe` and copies the result to
+`/mnt/PhantomIDE/bsnes.exe` by default.
 
 Links
 -----
 
   - [Official git repository](https://github.com/bsnes-emu/bsnes)
   - [Official Discord](https://discord.gg/B27hf27ZVf)
-
-Nightly Builds
---------------
-
-  - [Windows](https://github.com/bsnes-emu/bsnes/releases/download/nightly/bsnes-windows.zip)
-  - [macOS](https://github.com/bsnes-emu/bsnes/releases/download/nightly/bsnes-macos.zip)
-  - [Linux](https://github.com/bsnes-emu/bsnes/releases/download/nightly/bsnes-ubuntu.zip)
-  - [FreeBSD](https://api.cirrus-ci.com/v1/artifact/github/bsnes-emu/bsnes/freebsd-x86_64-binaries/bsnes-nightly/bsnes-nightly.zip)
 
 Preview
 -------

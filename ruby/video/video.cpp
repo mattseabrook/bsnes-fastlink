@@ -2,10 +2,6 @@
   #include <ruby/video/cgl.cpp>
 #endif
 
-#if defined(VIDEO_DIRECT3D)
-  #include <ruby/video/direct3d.cpp>
-#endif
-
 #if defined(VIDEO_DIRECTDRAW)
   #include <ruby/video/directdraw.cpp>
 #endif
@@ -80,6 +76,21 @@ auto Video::setFlush(bool flush) -> bool {
   if(instance->flush == flush) return true;
   if(!instance->hasFlush()) return false;
   if(!instance->setFlush(instance->flush = flush)) return false;
+  return true;
+}
+
+auto Video::setPresentMode(string presentMode) -> bool {
+  if(presentMode != "Immediate" && presentMode != "Mailbox" && presentMode != "FIFO") return false;
+  if(instance->presentMode == presentMode) return true;
+  if(!instance->setPresentMode(instance->presentMode = presentMode)) return false;
+  return true;
+}
+
+auto Video::setSwapchainImages(uint swapchainImages) -> bool {
+  if(swapchainImages < 2) swapchainImages = 2;
+  if(swapchainImages > 4) swapchainImages = 4;
+  if(instance->swapchainImages == swapchainImages) return true;
+  if(!instance->setSwapchainImages(instance->swapchainImages = swapchainImages)) return false;
   return true;
 }
 
@@ -191,6 +202,8 @@ auto Video::create(string driver) -> bool {
   auto context = self.instance->context;
   auto blocking = self.instance->blocking;
   auto flush = self.instance->flush;
+  auto presentMode = self.instance->presentMode;
+  auto swapchainImages = self.instance->swapchainImages;
   auto format = self.instance->format;
   auto shader = self.instance->shader;
 
@@ -204,10 +217,6 @@ auto Video::create(string driver) -> bool {
 
   #if defined(VIDEO_CGL)
   if(driver == "OpenGL 3.2") self.instance = new VideoCGL(*this);
-  #endif
-
-  #if defined(VIDEO_DIRECT3D)
-  if(driver == "Direct3D 9.0") self.instance = new VideoDirect3D(*this);
   #endif
 
   #if defined(VIDEO_DIRECTDRAW)
@@ -246,6 +255,8 @@ auto Video::create(string driver) -> bool {
   self.instance->context = context;
   self.instance->blocking = blocking;
   self.instance->flush = flush;
+  self.instance->presentMode = presentMode;
+  self.instance->swapchainImages = swapchainImages;
   self.instance->format = format;
   self.instance->shader = shader;
 
@@ -265,10 +276,6 @@ auto Video::hasDrivers() -> vector<string> {
 
   #if defined(VIDEO_WGL)
   "OpenGL 3.2",
-  #endif
-
-  #if defined(VIDEO_DIRECT3D)
-  "Direct3D 9.0",
   #endif
 
   #if defined(VIDEO_DIRECTDRAW)
@@ -307,8 +314,6 @@ auto Video::optimalDriver() -> string {
   return "Vulkan";
   #elif defined(VIDEO_WGL)
   return "OpenGL 3.2";
-  #elif defined(VIDEO_DIRECT3D)
-  return "Direct3D 9.0";
   #elif defined(VIDEO_DIRECTDRAW)
   return "DirectDraw 7.0";
   #elif defined(VIDEO_GDI)
@@ -331,8 +336,6 @@ auto Video::optimalDriver() -> string {
 auto Video::safestDriver() -> string {
   #if defined(VIDEO_VULKAN)
   return "Vulkan";
-  #elif defined(VIDEO_DIRECT3D)
-  return "Direct3D 9.0";
   #elif defined(VIDEO_WGL)
   return "OpenGL 3.2";
   #elif defined(VIDEO_DIRECTDRAW)

@@ -22,8 +22,7 @@ auto DriverSettings::create() -> void {
   videoExclusiveToggle.setText("Exclusive mode").setToolTip(
     "Causes fullscreen mode to take over all monitors.\n"
     "This allows adaptive sync to work better and reduces input latency.\n"
-    "However, multi-monitor users should turn this option off.\n"
-    "Note: Direct3D exclusive mode also does not honor the requested monitor."
+    "However, multi-monitor users should turn this option off."
   ).onToggle([&] {
     settings.video.exclusive = videoExclusiveToggle.checked();
     program.updateVideoExclusive();
@@ -40,9 +39,9 @@ auto DriverSettings::create() -> void {
     presentation.speedMenu.setEnabled(!videoBlockingToggle.checked() && audioBlockingToggle.checked());
   });
   #if defined(PLATFORM_WINDOWS)
-  videoFlushToggle.setText("GPU sync").setToolTip(
-    "Waits for the Vulkan queue to drain after present.\n"
-    "This can reduce queued frames at the cost of GPU headroom.\n\n"
+	  videoFlushToggle.setText("GPU sync").setToolTip(
+	    "Waits for the submitted Vulkan frame fence after present.\n"
+	    "This can reduce queued frames at the cost of GPU headroom.\n\n"
     "You should disable this option unless you find it necessary."
   ).onToggle([&] {
   #else

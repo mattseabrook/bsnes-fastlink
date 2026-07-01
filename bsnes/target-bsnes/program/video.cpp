@@ -1,17 +1,9 @@
-#if defined(PLATFORM_WINDOWS)
+#if defined(PLATFORM_WINDOWS) && defined(BUILD_DEBUG)
 #include <windows.h>
 #include <cstdarg>
 #include <cstdio>
 namespace {
 auto ProgramVideoTrace(const char* format, ...) -> void {
-  char buffer[2048];
-  int offset = snprintf(buffer, sizeof(buffer), "[bsnes-fastlink][video] ");
-  if(offset < 0) offset = 0;
-  va_list args;
-  va_start(args, format);
-  vsnprintf(buffer + offset, sizeof(buffer) - offset, format, args);
-  va_end(args);
-  OutputDebugStringA(buffer);
 }
 }
 #else
@@ -23,27 +15,54 @@ auto ProgramVideoTrace(const char* format, ...) -> void {
 
 auto Program::updateVideoDriver(Window parent) -> void {
   #if defined(PLATFORM_WINDOWS)
+  fastLinkCrashStep("Program::updateVideoDriver: begin");
+  fastLinkDebug(
+    "Program::updateVideoDriver begin requested=%s forced=%s viewport=%p present=%s swap=%u flush=%d blocking=%d",
+    (const char*)settings.video.driver,
+    NativeVideoDriverName,
+    (void*)presentation.viewport.handle(),
+    (const char*)settings.video.presentMode,
+    settings.video.swapchainImages,
+    settings.video.flush,
+    settings.video.blocking
+  );
   settings.video.driver = NativeVideoDriverName;
 
   video.setContext(presentation.viewport.handle());
+  fastLinkCrashStep("Program::updateVideoDriver: context set");
+  fastLinkDebug("Program::updateVideoDriver context set");
   video.create(settings.video.driver);
+  fastLinkCrashStep("Program::updateVideoDriver: create done");
+  fastLinkDebug("Program::updateVideoDriver create done active=%s ready=%d", (const char*)video.driver(), video.ready());
 
+  fastLinkDebug("Program::updateVideoDriver update exclusive");
   updateVideoExclusive();
+  fastLinkDebug("Program::updateVideoDriver update blocking");
   updateVideoBlocking();
+  fastLinkDebug("Program::updateVideoDriver update flush");
   updateVideoFlush();
+  fastLinkDebug("Program::updateVideoDriver update present mode");
+  updateVideoPresentMode();
+  fastLinkDebug("Program::updateVideoDriver update monitor");
   updateVideoMonitor();
+  fastLinkDebug("Program::updateVideoDriver update format");
   updateVideoFormat();
+  fastLinkDebug("Program::updateVideoDriver update shader");
   updateVideoShader();
 
   if(video.ready()) {
+    fastLinkDebug("Program::updateVideoDriver clear surface");
     video.clear();
   }
 
   video.onUpdate([&](uint width, uint height) {
+    fastLinkDebug("Program::updateVideoDriver onUpdate width=%u height=%u loaded=%d", width, height, emulator && emulator->loaded());
     if(!emulator->loaded()) video.clear();
   });
 
   if(!video.ready()) {
+    fastLinkCrashStep("Program::updateVideoDriver: failed");
+    fastLinkDebug("Program::updateVideoDriver failed active=%s", (const char*)video.driver());
     MessageDialog({
       "Error: failed to initialize [", NativeVideoDriverName, "] video backend."
     }).setAlignment(parent).error();
@@ -51,6 +70,8 @@ auto Program::updateVideoDriver(Window parent) -> void {
   }
 
   presentation.updateShaders();
+  fastLinkCrashStep("Program::updateVideoDriver: complete");
+  fastLinkDebug("Program::updateVideoDriver complete active=%s ready=%d format=%s", (const char*)video.driver(), video.ready(), (const char*)video.format());
   return;
   #endif
 
@@ -74,6 +95,7 @@ auto Program::updateVideoDriver(Window parent) -> void {
   updateVideoBlocking();
   ProgramVideoTrace("updateVideoDriver: update flush\n");
   updateVideoFlush();
+  updateVideoPresentMode();
   ProgramVideoTrace("updateVideoDriver: update monitor\n");
   updateVideoMonitor();
   ProgramVideoTrace("updateVideoDriver: update format\n");
@@ -110,10 +132,24 @@ auto Program::updateVideoExclusive() -> void {
 
 auto Program::updateVideoBlocking() -> void {
   video.setBlocking(settings.video.blocking);
+
+  #if defined(PLATFORM_WINDOWS)
+  if(audio.driver() == "WASAPI" && !settings.video.blocking && !settings.audio.blocking && !fastForwarding) {
+    updateAudioBlocking();
+    return;
+  }
+  #endif
+
+  presentation.speedMenu.setEnabled(!settings.video.blocking && settings.audio.blocking);
 }
 
 auto Program::updateVideoFlush() -> void {
   video.setFlush(settings.video.flush);
+}
+
+auto Program::updateVideoPresentMode() -> void {
+  video.setPresentMode(settings.video.presentMode);
+  video.setSwapchainImages(settings.video.swapchainImages);
 }
 
 auto Program::updateVideoMonitor() -> void {
@@ -173,8 +209,8 @@ auto Program::updateVideoPalette() -> void {
     }
 
     switch(depth) {
-    case 24: palette[color] = r >> 8 << 16 | g >> 8 <<  8 | b >> 8 << 0; break;
-    case 30: palette[color] = r >> 6 << 20 | g >> 6 << 10 | b >> 6 << 0; break;
+    case 24: palette[color] = 255u << 24 | r >> 8 << 16 | g >> 8 <<  8 | b >> 8 << 0; break;
+    case 30: palette[color] =   3u << 30 | r >> 6 << 20 | g >> 6 << 10 | b >> 6 << 0; break;
     }
 
     r >>= 1;
@@ -182,8 +218,8 @@ auto Program::updateVideoPalette() -> void {
     b >>= 1;
 
     switch(depth) {
-    case 24: paletteDimmed[color] = r >> 8 << 16 | g >> 8 <<  8 | b >> 8 << 0; break;
-    case 30: paletteDimmed[color] = r >> 6 << 20 | g >> 6 << 10 | b >> 6 << 0; break;
+    case 24: paletteDimmed[color] = 255u << 24 | r >> 8 << 16 | g >> 8 <<  8 | b >> 8 << 0; break;
+    case 30: paletteDimmed[color] =   3u << 30 | r >> 6 << 20 | g >> 6 << 10 | b >> 6 << 0; break;
     }
   }
 

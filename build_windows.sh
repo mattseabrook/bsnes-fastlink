@@ -126,7 +126,7 @@ setup_flags() {
     stable)      OPT=("-O1" "-DBUILD_STABLE") ;;
     size)        OPT=("-Os" "-DBUILD_SIZE") ;;
     release)     OPT=("-O2" "-DBUILD_RELEASE") ;;
-    performance) OPT=("-O2" "-Oi" "-DBUILD_PERFORMANCE") ;;
+    performance) OPT=("-O2" "-Oi" "/arch:AVX" "-DBUILD_PERFORMANCE") ;;
     *) die "Unknown CONFIG: $CONFIG" ;;
   esac
 
@@ -225,6 +225,36 @@ compile_resources() {
       popd > /dev/null
     fi
   fi
+}
+
+# ---------------------- Build support files ----------------------------------
+ensure_build_support_files() {
+  mkdir -p "$BUILD_DIR"
+
+  cat > "$BUILD_DIR/vasprintf.c" <<'EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+
+int vasprintf(char **str, const char *fmt, va_list args) {
+    va_list copy;
+    va_copy(copy, args);
+    int size = _vscprintf(fmt, copy);
+    va_end(copy);
+    if (size < 0) return -1;
+    *str = (char*)malloc((size_t)size + 1);
+    if (!*str) return -1;
+    return vsprintf(*str, fmt, args);
+}
+
+int asprintf(char **strp, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int r = vasprintf(strp, fmt, args);
+    va_end(args);
+    return r;
+}
+EOF
 }
 
 # ---------------------- Compile all units ------------------------------------
@@ -377,7 +407,10 @@ link_exe() {
 # ---------------------- Clean -------------------------------------------------
 clean() {
   banner "Cleaning"
-  rm -rf "$BUILD_DIR"
+  # Keep tracked support files in build_win/; only remove generated artifacts.
+  rm -rf "$BUILD_DIR/obj"
+  rm -f "$BUILD_DIR/bsnes.exe" "$BUILD_DIR/compile_manifest.txt"
+  rm -f "$BUILD_DIR"/*.log
   ok "Clean complete"
 }
 
@@ -439,6 +472,9 @@ main() {
   ok "Static dependencies found"
   info "Vulkan include: $VULKAN_INCLUDE_DIR"
   info "Vulkan libs: $VULKAN_LIB_DIR"
+
+  # Ensure generated shim sources exist even after a clean.
+  ensure_build_support_files
 
   # Setup compiler/linker config
   setup_flags

@@ -29,27 +29,6 @@ auto InputManager::bindHotkeys() -> void {
     presentation.muteAudio.setChecked(!presentation.muteAudio.checked()).doToggle();
   }));
 
-  hotkeys.append(InputHotkey("Rewind").onPress([&] {
-    if(!emulator->loaded() || program.fastForwarding) return;
-    if(program.rewind.frequency == 0) {
-      return program.showMessage("Please enable rewind support in Settings->Emulator first");
-    }
-    program.rewinding = true;
-    program.rewindMode(Program::Rewind::Mode::Rewinding);
-    volume = Emulator::audio.volume();
-    if(settings.rewind.mute) {
-      program.mute |= Program::Mute::Rewind;
-    } else {
-      Emulator::audio.setVolume(volume * 0.65);
-    }
-  }).onRelease([&] {
-    program.rewinding = false;
-    if(!emulator->loaded()) return;
-    program.rewindMode(Program::Rewind::Mode::Playing);
-    program.mute &= ~Program::Mute::Rewind;
-    Emulator::audio.setVolume(volume);
-  }));
-
   hotkeys.append(InputHotkey("Save State").onPress([&] {
     program.saveState({"Quick/Slot ", stateSlot});
   }));
@@ -81,7 +60,7 @@ auto InputManager::bindHotkeys() -> void {
   }));
 
   hotkeys.append(InputHotkey("Fast Forward").onPress([] {
-    if(!emulator->loaded() || program.rewinding) return;
+    if(!emulator->loaded()) return;
     program.fastForwarding = true;
     emulator->setFrameSkip(emulator->configuration("Hacks/PPU/Fast") == "true" ? settings.fastForward.frameSkip : 0);
     video.setBlocking(false);

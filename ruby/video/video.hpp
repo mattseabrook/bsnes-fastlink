@@ -25,6 +25,8 @@ struct VideoDriver {
   virtual auto setContext(uintptr context) -> bool { return true; }
   virtual auto setBlocking(bool blocking) -> bool { return true; }
   virtual auto setFlush(bool flush) -> bool { return true; }
+  virtual auto setPresentMode(string presentMode) -> bool { return true; }
+  virtual auto setSwapchainImages(uint swapchainImages) -> bool { return true; }
   virtual auto setFormat(string format) -> bool { return true; }
   virtual auto setShader(string shader) -> bool { return true; }
 
@@ -45,7 +47,9 @@ protected:
   bool exclusive = false;
   uintptr context = 0;
   bool blocking = false;
-  bool flush = true;  //fastlink: default to GPU pipeline drain for lowest latency
+  bool flush = false;
+  string presentMode = "Mailbox";
+  uint swapchainImages = 2;
   string format = "ARGB24";
   string shader = "Blur";
 };
@@ -106,6 +110,8 @@ struct Video {
   auto setContext(uintptr context) -> bool;
   auto setBlocking(bool blocking) -> bool;
   auto setFlush(bool flush) -> bool;
+  auto setPresentMode(string presentMode) -> bool;
+  auto setSwapchainImages(uint swapchainImages) -> bool;
   auto setFormat(string format) -> bool;
   auto setShader(string shader) -> bool;
 

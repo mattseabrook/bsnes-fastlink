@@ -52,6 +52,7 @@ struct InputMapping {
     shared_pointer<HID::Device> device;
     uint group = 0;
     uint input = 0;
+    const int16_t* value = nullptr;
     Qualifier qualifier = Qualifier::None;
   };
   Binding bindings[BindingLimit];
@@ -91,6 +92,8 @@ struct InputManager {
   auto frame() -> void;
   auto onChange(shared_pointer<HID::Device> device, uint group, uint input, int16_t oldValue, int16_t newValue) -> void;
   auto mapping(uint port, uint device, uint input) -> maybe<InputMapping&>;
+  auto cachedMapping(uint port, uint device, uint input) -> maybe<InputMapping&>;
+  auto rebuildMappingCache() -> void;
   auto findMouse() -> shared_pointer<HID::Device>;
   auto flushWorkerEvents() -> void;
 
@@ -130,6 +133,11 @@ public:
   ::std::thread::id _mainThreadID;
   vector<shared_pointer<HID::Device>> _pendingDevices;
   ::std::vector<ChangeEvent> _pendingChanges;
+
+  static constexpr uint MappingCachePorts = 8;
+  static constexpr uint MappingCacheDevices = 32;
+  static constexpr uint MappingCacheInputs = 256;
+  InputMapping* _mappingCache[MappingCachePorts][MappingCacheDevices][MappingCacheInputs] = {};
 };
 
 struct NativeInputManager {

@@ -4,6 +4,11 @@ struct Program : Lock, Emulator::Platform {
   //program.cpp
   auto create() -> void;
   auto main() -> void;
+  auto runEmulationFrame(bool videoEnabled = true, bool audioEnabled = true, bool accountFrame = true) -> void;
+  auto runAheadFrames() const -> uint;
+  auto resetRunAheadWarmup() -> void;
+  auto paceFrame() -> void;
+  auto resetFramePacer() -> void;
   auto quit() -> void;
 
   //platform.cpp
@@ -65,34 +70,12 @@ struct Program : Lock, Emulator::Platform {
   auto removeState(string filename) -> bool;
   auto renameState(string from, string to) -> bool;
 
-  //movies.cpp
-  struct Movie {
-    enum Mode : uint { Inactive, Playing, Recording } mode = Mode::Inactive;
-    serializer state;
-    vector<int16> input;
-  } movie;
-  auto movieMode(Movie::Mode) -> void;
-  auto moviePlay() -> void;
-  auto movieRecord(bool fromBeginning) -> void;
-  auto movieStop() -> void;
-
-  //rewind.cpp
-  struct Rewind {
-    enum Mode : uint { Playing, Rewinding } mode = Mode::Playing;
-    vector<serializer> history;
-    uint length = 0;
-    uint frequency = 0;
-    uint counter = 0;  //in frames
-  } rewind;
-  auto rewindMode(Rewind::Mode) -> void;
-  auto rewindReset() -> void;
-  auto rewindRun() -> void;
-
   //video.cpp
   auto updateVideoDriver(Window parent) -> void;
   auto updateVideoExclusive() -> void;
   auto updateVideoBlocking() -> void;
   auto updateVideoFlush() -> void;
+  auto updateVideoPresentMode() -> void;
   auto updateVideoMonitor() -> void;
   auto updateVideoFormat() -> void;
   auto updateVideoShader() -> void;
@@ -190,8 +173,13 @@ public:
 
   bool frameAdvanceLock = false;
   bool loading = false;
+  bool suppressVideoFrame = false;
+  bool suppressAudioFrame = false;
+  bool suppressFrameAccounting = false;
 
   uint64 autoSaveTime;
+  uint64 framePaceDeadline = 0;
+  uint runAheadWarmupFrames = 0;
 
   uint64 statusTime;
   string statusMessage;
@@ -203,12 +191,10 @@ public:
     Always      = 1 << 1,
     Unfocused   = 1 << 2,
     FastForward = 1 << 3,
-    Rewind      = 1 << 4,
   };};
   uint mute = 0;
 
   bool fastForwarding = false;
-  bool rewinding = false;
 };
 
 extern Program program;

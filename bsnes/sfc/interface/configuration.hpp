@@ -41,7 +41,7 @@ struct Configuration {
       bool noVRAMBlocking = false;
       uint renderCycle = 512;
       struct Mode7 {
-        uint scale = 1;
+        uint scale = 4;
         bool perspective = true;
         bool supersample = false;
         bool mosaic = true;

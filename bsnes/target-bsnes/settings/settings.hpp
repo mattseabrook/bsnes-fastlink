@@ -12,6 +12,8 @@ struct Settings : Markup::Node {
     bool exclusive = false;
     bool blocking = false;
     bool flush = false;
+    string presentMode = "Mailbox";
+    uint swapchainImages = 2;
     string monitor = "Primary";
     string format = "Default";
     string shader = "None";
@@ -34,7 +36,7 @@ struct Settings : Markup::Node {
     string driver;
     bool exclusive = false;
     string device;
-    bool blocking = true;
+    bool blocking = false;
     bool dynamic = false;
     uint frequency = 48000;
     uint latency = 0;
@@ -80,16 +82,23 @@ struct Settings : Markup::Node {
     bool mute = false;
   } fastForward;
 
-  struct Rewind {
-    uint frequency = 0;
-    uint length = 80;
-    bool mute = false;
-  } rewind;
+  struct FastLink {
+    bool ramTraceServer = false;
+    uint runAhead = 1;
+    bool disableSoftwareFilters = true;
+    bool lowLatencyInactiveYield = true;
+    bool softwareFramePacing = true;
+    uint inputPollMicroseconds = 500;
+    int mainThreadAffinity = -2;
+    int inputThreadAffinity = -2;
+    bool windowsTimerResolution = true;
+    bool windowsHighPerformancePower = false;
+  } fastLink;
 
   struct Emulator {
     bool warnOnUnverifiedGames = false;
     struct AutoSaveMemory {
-      bool enable = true;
+      bool enable = false;
       uint interval = 30;
     } autoSaveMemory;
     bool autoSaveStateOnUnload = false;
@@ -107,13 +116,13 @@ struct Settings : Markup::Node {
       struct PPU {
         bool fast = true;
         bool deinterlace = true;
-        bool noSpriteLimit = false;
-        bool noVRAMBlocking = false;
-        struct Mode7 {
-          uint scale = 1;
-          bool perspective = true;
-          bool supersample = false;
-          bool mosaic = true;
+      bool noSpriteLimit = false;
+      bool noVRAMBlocking = false;
+      struct Mode7 {
+        uint scale = 4;
+        bool perspective = true;
+        bool supersample = false;
+        bool mosaic = true;
         } mode7;
       } ppu;
       struct DSP {
@@ -326,14 +335,6 @@ public:
     ComboButton limiterAmount{&fastForwardLayout, Size{0, 0}};
   CheckLabel fastForwardMute{this, Size{0, 0}};
   Canvas fastForwardSpacer{this, Size{~0, 1}};
-  //
-  Label rewindLabel{this, Size{~0, 0}, 2};
-  HorizontalLayout rewindLayout{this, Size{~0, 0}};
-    Label rewindFrequencyLabel{&rewindLayout, Size{0, 0}};
-    ComboButton rewindFrequencyOption{&rewindLayout, Size{0, 0}};
-    Label rewindLengthLabel{&rewindLayout, Size{0, 0}};
-    ComboButton rewindLengthOption{&rewindLayout, Size{0, 0}};
-  CheckLabel rewindMute{this, Size{0, 0}};
 };
 
 struct EnhancementSettings : VerticalLayout {

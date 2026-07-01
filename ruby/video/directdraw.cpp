@@ -116,7 +116,7 @@ private:
     windowClass.hCursor = LoadCursor(0, IDC_ARROW);
     windowClass.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     windowClass.hInstance = GetModuleHandle(0);
-    windowClass.lpfnWndProc = VideoDirect3D9_WindowProcedure;
+    windowClass.lpfnWndProc = VideoDirectDraw7_WindowProcedure;
     windowClass.lpszClassName = L"VideoDirectDraw7_Window";
     windowClass.lpszMenuName = 0;
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
