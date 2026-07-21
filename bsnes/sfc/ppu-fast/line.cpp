@@ -1,23 +1,120 @@
 uint PPU::Line::start = 0;
 uint PPU::Line::count = 0;
 
+#if defined(PLATFORM_WINDOWS)
+namespace {
+
+// The normal build enables OpenMP for this loop.  The standalone Windows
+// build does not ship an OpenMP runtime, which previously made its pragma a
+// no-op and forced the entire fast PPU (including HD Mode 7) onto the
+// emulation thread.  Use the native Windows thread pool there instead.
+struct PPUFastLineTask {
+  PPU::Line* lines = nullptr;
+  uint begin = 0;
+  uint end = 0;
+  bool deinterlace = false;
+  bool interlace = false;
+  bool field = false;
+  HANDLE complete = nullptr;
+};
+
+auto renderPPUFastLines(PPUFastLineTask& task) -> void {
+  for(uint y = task.begin; y < task.end; y++) {
+    auto& line = task.lines[y];
+    if(task.deinterlace) {
+      if(!task.interlace) {
+        line.render(0);
+      } else {
+        line.render(0);
+        line.render(1);
+      }
+    } else {
+      line.render(task.field);
+    }
+  }
+}
+
+auto CALLBACK renderPPUFastLinesCallback(PTP_CALLBACK_INSTANCE, void* context) -> void {
+  auto& task = *(PPUFastLineTask*)context;
+  renderPPUFastLines(task);
+  SetEvent(task.complete);
+}
+
+}
+#endif
+
 auto PPU::Line::flush() -> void {
   if(Line::count) {
     if(ppu.hdScale() > 1) cacheMode7HD();
-    #pragma omp parallel for if(Line::count >= 8)
-    for(uint y = 0; y < Line::count; y++) {
-      if(ppu.deinterlace()) {
-        if(!ppu.interlace()) {
-          //some games enable interlacing in 240p mode, just force these to even fields
-          ppu.lines[Line::start + y].render(0);
+
+    #if defined(PLATFORM_WINDOWS)
+    // Keep one logical processor available for the MMCSS audio worker.  Cap
+    // participation to avoid flooding the system thread pool on machines with
+    // very high logical-processor counts.
+    static uint maximumParticipants = [] {
+      SYSTEM_INFO systemInfo{};
+      GetSystemInfo(&systemInfo);
+      uint processors = max(1u, (uint)systemInfo.dwNumberOfProcessors);
+      uint participants = processors > 2 ? processors - 1 : processors;
+      return min(8u, max(1u, participants));
+    }();
+    uint participants = maximumParticipants;
+    participants = min(participants, max(1u, Line::count / 8));
+
+    if(participants > 1) {
+      static HANDLE completionEvents[7] = {
+        CreateEvent(nullptr, false, false, nullptr),
+        CreateEvent(nullptr, false, false, nullptr),
+        CreateEvent(nullptr, false, false, nullptr),
+        CreateEvent(nullptr, false, false, nullptr),
+        CreateEvent(nullptr, false, false, nullptr),
+        CreateEvent(nullptr, false, false, nullptr),
+        CreateEvent(nullptr, false, false, nullptr),
+      };
+      PPUFastLineTask tasks[8];
+      HANDLE submittedEvents[7];
+      uint submitted = 0;
+      uint linesPerTask = (Line::count + participants - 1) / participants;
+
+      for(uint taskID = 0; taskID < participants; taskID++) {
+        auto& task = tasks[taskID];
+        task.lines = &ppu.lines[Line::start];
+        task.begin = min(Line::count, taskID * linesPerTask);
+        task.end = min(Line::count, task.begin + linesPerTask);
+        task.deinterlace = ppu.deinterlace();
+        task.interlace = ppu.interlace();
+        task.field = ppu.field();
+
+        if(taskID == 0 || task.begin == task.end) continue;
+        task.complete = completionEvents[taskID - 1];
+        ResetEvent(task.complete);
+        if(TrySubmitThreadpoolCallback(renderPPUFastLinesCallback, &task, nullptr)) {
+          submittedEvents[submitted++] = task.complete;
         } else {
-          //for actual interlaced frames, render both fields every farme for 480i -> 480p
-          ppu.lines[Line::start + y].render(0);
-          ppu.lines[Line::start + y].render(1);
+          renderPPUFastLines(task);
         }
-      } else {
-        //standard 240p (progressive) and 480i (interlaced) rendering
-        ppu.lines[Line::start + y].render(ppu.field());
+      }
+
+      renderPPUFastLines(tasks[0]);
+      if(submitted) WaitForMultipleObjects(submitted, submittedEvents, true, INFINITE);
+    } else
+    #endif
+    {
+      #pragma omp parallel for if(Line::count >= 8)
+      for(uint y = 0; y < Line::count; y++) {
+        if(ppu.deinterlace()) {
+          if(!ppu.interlace()) {
+            //some games enable interlacing in 240p mode, just force these to even fields
+            ppu.lines[Line::start + y].render(0);
+          } else {
+            //for actual interlaced frames, render both fields every frame for 480i -> 480p
+            ppu.lines[Line::start + y].render(0);
+            ppu.lines[Line::start + y].render(1);
+          }
+        } else {
+          //standard 240p (progressive) and 480i (interlaced) rendering
+          ppu.lines[Line::start + y].render(ppu.field());
+        }
       }
     }
     Line::start = 0;
