@@ -33,8 +33,8 @@ struct AudioDirectSound : AudioDriver {
     if(!ready()) return;
 
     _ringRead = 0;
-    _ringWrite = _rings - 1;
-    _ringDistance = _rings - 1;
+    _ringWrite = _rings - 2;
+    _ringDistance = _rings - 2;
 
     if(_buffer) memory::fill<uint32_t>(_buffer, _period * _rings);
     _offset = 0;
@@ -45,9 +45,15 @@ struct AudioDirectSound : AudioDriver {
 
     void* output;
     DWORD size;
-    _secondary->Lock(0, _period * _rings * 4, &output, &size, 0, 0, 0);
-    memory::fill<uint8_t>(output, size);
-    _secondary->Unlock(output, size, 0, 0);
+    auto result = _secondary->Lock(0, _period * _rings * 4, &output, &size, 0, 0, 0);
+    if(result == DSERR_BUFFERLOST) {
+      _secondary->Restore();
+      result = _secondary->Lock(0, _period * _rings * 4, &output, &size, 0, 0, 0);
+    }
+    if(result == DS_OK) {
+      memory::fill<uint8_t>(output, size);
+      _secondary->Unlock(output, size, 0, 0);
+    }
 
     _secondary->Play(0, 0, DSBPLAY_LOOPING);
   }
@@ -60,39 +66,60 @@ struct AudioDirectSound : AudioDriver {
     if(++_offset < _period) return;
     _offset = 0;
 
-    if(self.blocking) {
-      //wait until playback buffer has an empty ring to write new audio data to
-      while(_ringDistance >= _rings - 1) {
-        DWORD position;
-        _secondary->GetCurrentPosition(&position, 0);
-        uint ringActive = position / (_period * 4);
-        if(ringActive == _ringRead) continue;
-
-        //subtract number of played rings from ring distance counter
-        _ringDistance -= (_rings + ringActive - _ringRead) % _rings;
-        _ringRead = ringActive;
-
-        if(_ringDistance < 2) {
-          //buffer underflow; set max distance to recover quickly
-          _ringDistance = _rings - 1;
-          _ringWrite = (_rings + _ringRead - 1) % _rings;
-          break;
-        }
-      }
-    }
+    if(!ensureWritableRing()) return;
 
     _ringWrite = (_ringWrite + 1) % _rings;
-    _ringDistance = (_ringDistance + 1) % _rings;
+    _ringDistance++;
 
     void* output;
     DWORD size;
-    if(_secondary->Lock(_ringWrite * _period * 4, _period * 4, &output, &size, 0, 0, 0) == DS_OK) {
+    auto result = _secondary->Lock(_ringWrite * _period * 4, _period * 4, &output, &size, 0, 0, 0);
+    if(result == DSERR_BUFFERLOST) {
+      _secondary->Restore();
+      result = _secondary->Lock(_ringWrite * _period * 4, _period * 4, &output, &size, 0, 0, 0);
+    }
+    if(result == DS_OK) {
       memory::copy<uint32_t>(output, _buffer, _period);
       _secondary->Unlock(output, size, 0, 0);
     }
   }
 
 private:
+  auto synchronizePlaybackRing() -> void {
+    if(!_secondary || !_period || !_rings) return;
+
+    DWORD position = 0;
+    if(_secondary->GetCurrentPosition(&position, 0) != DS_OK) return;
+
+    uint ringActive = position / (_period * 4);
+    if(ringActive == _ringRead) return;
+
+    uint ringsPlayed = (_rings + ringActive - _ringRead) % _rings;
+    if(ringsPlayed > (uint)_ringDistance) {
+      _ringDistance = 0;
+    } else {
+      _ringDistance -= ringsPlayed;
+    }
+    _ringRead = ringActive;
+
+    if(_ringDistance < 2) {
+      _ringDistance = _rings - 2;
+      _ringWrite = (_rings + _ringRead - 2) % _rings;
+    }
+  }
+
+  auto ensureWritableRing() -> bool {
+    synchronizePlaybackRing();
+    if(_ringDistance < (int)_rings - 1) return true;
+    if(!self.blocking) return false;
+
+    while(_ringDistance >= (int)_rings - 1) {
+      Sleep(1);
+      synchronizePlaybackRing();
+    }
+    return true;
+  }
+
   auto initialize() -> bool {
     terminate();
 
@@ -102,14 +129,14 @@ private:
     _offset = 0;
 
     if(DirectSoundCreate(0, &_interface, 0) != DS_OK) return terminate(), false;
-    _interface->SetCooperativeLevel(GetDesktopWindow(), DSSCL_PRIORITY);
+    if(_interface->SetCooperativeLevel(GetDesktopWindow(), DSSCL_PRIORITY) != DS_OK) return terminate(), false;
 
     DSBUFFERDESC primaryDescription = {};
     primaryDescription.dwSize = sizeof(DSBUFFERDESC);
     primaryDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
     primaryDescription.dwBufferBytes = 0;
     primaryDescription.lpwfxFormat = 0;
-    _interface->CreateSoundBuffer(&primaryDescription, &_primary, 0);
+    if(_interface->CreateSoundBuffer(&primaryDescription, &_primary, 0) != DS_OK) return terminate(), false;
 
     WAVEFORMATEX waveFormat = {};
     waveFormat.wFormatTag = WAVE_FORMAT_PCM;
@@ -118,7 +145,7 @@ private:
     waveFormat.wBitsPerSample = 16;
     waveFormat.nBlockAlign = waveFormat.nChannels * waveFormat.wBitsPerSample / 8;
     waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
-    _primary->SetFormat(&waveFormat);
+    if(_primary->SetFormat(&waveFormat) != DS_OK) return terminate(), false;
 
     DSBUFFERDESC secondaryDescription = {};
     secondaryDescription.dwSize = sizeof(DSBUFFERDESC);
@@ -126,9 +153,9 @@ private:
     secondaryDescription.dwBufferBytes = _period * _rings * 4;
     secondaryDescription.guid3DAlgorithm = GUID_NULL;
     secondaryDescription.lpwfxFormat = &waveFormat;
-    _interface->CreateSoundBuffer(&secondaryDescription, &_secondary, 0);
-    _secondary->SetFrequency(self.frequency);
-    _secondary->SetCurrentPosition(0);
+    if(_interface->CreateSoundBuffer(&secondaryDescription, &_secondary, 0) != DS_OK) return terminate(), false;
+    if(_secondary->SetFrequency(self.frequency) != DS_OK) return terminate(), false;
+    if(_secondary->SetCurrentPosition(0) != DS_OK) return terminate(), false;
 
     _ready = true;
     clear();

@@ -114,9 +114,14 @@ auto Audio::setLatency(uint latency) -> bool {
 //
 
 auto Audio::clear() -> void {
+  bool restartWorker = _workerRunning.load(::std::memory_order_acquire);
+  if(restartWorker) stopWorker();
   _smoothedMultiplier = 1.0;
+  _ringRead.store(0, ::std::memory_order_release);
+  _ringWrite.store(0, ::std::memory_order_release);
   for(auto& resampler : resamplers) resampler.reset(instance->frequency);
-  return instance->clear();
+  instance->clear();
+  if(restartWorker) startWorker();
 }
 
 auto Audio::level() -> double {
@@ -129,17 +134,7 @@ auto Audio::output(const double samples[]) -> void {
   if(!instance->dynamic) {
     //fastlink: push to ring buffer for worker thread
     if(useWorker) {
-      uint channels = instance->channels;
-      uint write = _ringWrite.load(::std::memory_order_relaxed);
-      uint next = (write + 1) % _ringCapacity;
-      if(next != _ringRead.load(::std::memory_order_acquire)) {
-        for(uint n = 0; n < channels && n < 2; n++) {
-          _ringBuffer[write * 2 + n] = samples[n];
-        }
-        _ringWrite.store(next, ::std::memory_order_release);
-        _workerCV.notify_one();
-      }
-      //if ring full, drop sample (non-blocking)
+      _ringPush(samples, instance->channels);
       return;
     }
     return instance->output(samples);
@@ -171,19 +166,31 @@ auto Audio::output(const double samples[]) -> void {
     for(uint n : range(instance->channels)) samples[n] = resamplers[n].read();
     //fastlink: push resampled output to ring buffer for worker thread
     if(useWorker) {
-      uint write = _ringWrite.load(::std::memory_order_relaxed);
-      uint next = (write + 1) % _ringCapacity;
-      if(next != _ringRead.load(::std::memory_order_acquire)) {
-        for(uint n = 0; n < instance->channels && n < 2; n++) {
-          _ringBuffer[write * 2 + n] = samples[n];
-        }
-        _ringWrite.store(next, ::std::memory_order_release);
-        _workerCV.notify_one();
-      }
+      _ringPush(samples, instance->channels);
     } else {
       instance->output(samples);
     }
   }
+}
+
+auto Audio::_ringDistance(uint read, uint write) -> uint {
+  return write >= read ? write - read : _ringCapacity - read + write;
+}
+
+auto Audio::_ringPush(const double samples[], uint channels) -> void {
+  uint read = _ringRead.load(::std::memory_order_acquire);
+  uint write = _ringWrite.load(::std::memory_order_relaxed);
+
+  uint next = (write + 1) % _ringCapacity;
+  // Preserve strict SPSC ownership: only the worker advances the read index.
+  // If it is completely full, dropping the newest sample is safer than racing
+  // the consumer while it reads a slot.
+  if(next == read) return;
+
+  _ringBuffer[write * 2 + 0] = channels >= 1 ? samples[0] : 0.0;
+  _ringBuffer[write * 2 + 1] = channels >= 2 ? samples[1] : 0.0;
+  _ringWrite.store(next, ::std::memory_order_release);
+  _workerCV.notify_one();
 }
 
 auto Audio::startWorker() -> void {
@@ -210,18 +217,53 @@ auto Audio::_workerMain() -> void {
   if(taskHandle) AvSetMmThreadPriority(taskHandle, AVRT_PRIORITY_HIGH);
   #endif
 
+  bool primed = false;
+  bool startup = true;
   while(_workerRunning) {
     uint read = _ringRead.load(::std::memory_order_relaxed);
     uint write = _ringWrite.load(::std::memory_order_acquire);
 
+    // Keep a small reserve outside WASAPI.  The endpoint worker can continue
+    // playing through ordinary focus changes, window activation and short DWM
+    // scheduling stalls without exposing an underrun. Startup uses the full
+    // reserve; later underruns use a much smaller anti-chatter watermark.
+    uint frequency = instance->frequency ? instance->frequency : 48000u;
+    uint startupFrames = min(_ringCapacity - 1, max(512u, frequency * 60u / 1000u));
+    uint recoveryFrames = min(_ringCapacity - 1, max(128u, frequency * 8u / 1000u));
+    uint primeFrames = startup ? startupFrames : recoveryFrames;
+    if(!primed) {
+      if(_ringDistance(read, write) < primeFrames) {
+        ::std::unique_lock<::std::mutex> lock(_workerMutex);
+        _workerCV.wait_for(lock, ::std::chrono::milliseconds(2));
+        continue;
+      }
+      primed = true;
+      startup = false;
+    }
+
     if(read == write) {
-      //ring empty, wait for signal
+      //Use a short recovery watermark to avoid rapid empty/non-empty chatter.
+      //WASAPI normally has enough endpoint audio queued to cover this refill,
+      //so it does not recreate the old 60ms audible mute.
+      primed = false;
       ::std::unique_lock<::std::mutex> lock(_workerMutex);
       _workerCV.wait_for(lock, ::std::chrono::milliseconds(1), [&] {
         return _ringRead.load(::std::memory_order_relaxed) != _ringWrite.load(::std::memory_order_acquire)
             || !_workerRunning;
       });
       continue;
+    }
+
+    // If the host audio device stalled, discard stale samples from the
+    // consumer side before draining. Keeping read-index ownership here avoids
+    // the producer/consumer slot race while restoring real-time audio quickly.
+    write = _ringWrite.load(::std::memory_order_acquire);
+    uint maxQueued = max(startupFrames * 2, min(_ringCapacity - 1, frequency / 5u));
+    if(maxQueued >= _ringCapacity) maxQueued = _ringCapacity - 1;
+    auto queued = _ringDistance(read, write);
+    if(queued > maxQueued) {
+      read = (write + _ringCapacity - maxQueued) % _ringCapacity;
+      _ringRead.store(read, ::std::memory_order_release);
     }
 
     //drain available samples

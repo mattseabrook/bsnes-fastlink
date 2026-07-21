@@ -39,6 +39,7 @@ struct SnesButtonMap {
 };
 
 constexpr auto RetroUSBButtonMap = SnesButtonMap{1, 5, 0, 4, 6, 7, 2, 3};
+constexpr auto StandardHIDButtonMap = SnesButtonMap{0, 1, 2, 3, 4, 5, 6, 7};
 
 auto isRetroUSBController(uint16_t vendorID, uint16_t productID) -> bool {
   if(vendorID != RetroUSBVendorID) return false;
@@ -64,6 +65,8 @@ auto applyNativeInputThreadAffinity() -> void {
       if(processMask & ((DWORD_PTR)1 << index)) target = index;
     }
   }
+
+  if(target < 0 || target >= (int)(sizeof(DWORD_PTR) * 8)) return;
 
   DWORD_PTR mask = (DWORD_PTR)1 << target;
   if(!(processMask & mask)) return;
@@ -516,10 +519,12 @@ auto NativeInputManager::mapKeyboard(uint port, uint input) const -> bool {
 }
 
 auto NativeInputManager::mapPad(const HidPad& pad, uint input) const -> bool {
-  auto mapping = RetroUSBButtonMap;
-  if(!isRetroUSBController(pad.vendorID, pad.productID)) {
-    mapping = RetroUSBButtonMap;
-  }
+  // Known RetroUSB devices always use their established physical ordering.
+  // Unknown HID devices default to that compatibility map for existing
+  // FastLink users, but can opt into conventional HID ordering in the config.
+  auto mapping = isRetroUSBController(pad.vendorID, pad.productID)
+    || settings.fastLink.genericHIDMapping == "SNES Adapter"
+    ? RetroUSBButtonMap : StandardHIDButtonMap;
 
   switch(input) {
   case GamepadUp: return pad.state.up;

@@ -69,8 +69,9 @@ auto requestedPresentMode(string name) -> VkPresentModeKHR {
 auto choosePresentMode(const VkPresentModeKHR* presentModes, uint32_t count, string requested) -> VkPresentModeKHR {
   auto preferred = requestedPresentMode(requested);
   if(hasPresentMode(presentModes, count, preferred)) return preferred;
-  if(hasPresentMode(presentModes, count, VK_PRESENT_MODE_MAILBOX_KHR)) return VK_PRESENT_MODE_MAILBOX_KHR;
-  if(hasPresentMode(presentModes, count, VK_PRESENT_MODE_IMMEDIATE_KHR)) return VK_PRESENT_MODE_IMMEDIATE_KHR;
+  // FIFO is guaranteed by Vulkan and is the only safe fallback for an
+  // explicitly requested presentation mode. Never introduce tearing when a
+  // user's requested mode is unavailable.
   return VK_PRESENT_MODE_FIFO_KHR;
 }
 }
@@ -312,6 +313,11 @@ struct NativeVideoImplementation {
     _queueFamily = UINT32_MAX;
     _imageCount = 0;
     _frameIndex = 0;
+    _stagingFrameIndex = 0;
+    _stagingFramePending = false;
+    _preparedFrameIndex = 0;
+    _preparedImageIndex = 0;
+    _framePrepared = false;
     _swapExtent = {};
     fastLinkDebug("NativeVulkan::terminate done");
   }
@@ -334,10 +340,19 @@ struct NativeVideoImplementation {
   }
 
   auto acquire(uint width, uint height) -> NativeVideoManager::Acquire {
+    #if defined(BUILD_DEBUG)
     static uint acquireTraceCounter = 0;
     bool traceAcquire = acquireTraceCounter++ < 80;
+    #else
+    constexpr bool traceAcquire = false;
+    #endif
     if(traceAcquire) fastLinkDebug("NativeVulkan::acquire begin width=%u height=%u readyDevice=%d", width, height, _device != VK_NULL_HANDLE);
     NativeVideoManager::Acquire result;
+    // The frontend writes directly into one persistently mapped upload
+    // buffer. Do not hand it back until the last submission that copied from
+    // it has completed. This caps host/GPU work at one emulated frame without
+    // blocking the later presentation operation.
+    if(!prepareUpload()) return result;
     if(!ensureTexture(width, height)) {
       if(traceAcquire) fastLinkDebug("NativeVulkan::acquire ensureTexture failed");
       return result;
@@ -348,10 +363,56 @@ struct NativeVideoImplementation {
     return result;
   }
 
+  auto prepareUpload() -> bool {
+    if(!_device) return false;
+    if(!_stagingFramePending) return true;
+    // Never let GPU scheduling stall the emulation/audio producer.  The main
+    // loop can run an audio-only frame and try this upload slot again on its
+    // next iteration.
+    auto waitResult = vkGetFenceStatus(_device, _fences[_stagingFrameIndex]);
+    if(waitResult == VK_NOT_READY) return false;
+    if(waitResult != VK_SUCCESS) return false;
+    _stagingFramePending = false;
+    return true;
+  }
+
+  auto prepareFrame() -> bool {
+    if(!prepareUpload() || !_swapchain || !_imageCount) return false;
+    if(_framePrepared) return true;
+
+    auto clientSize = owner.currentClientSize();
+    if(!clientSize.width || !clientSize.height) return false;
+
+    uint32_t frameIndex = _frameIndex % _imageCount;
+    if(vkGetFenceStatus(_device, _fences[frameIndex]) != VK_SUCCESS) return false;
+
+    uint32_t imageIndex = 0;
+    auto result = vkAcquireNextImageKHR(
+      _device, _swapchain, 0,
+      _acquireSemaphores[frameIndex], VK_NULL_HANDLE, &imageIndex
+    );
+    if(result == VK_NOT_READY || result == VK_TIMEOUT) return false;
+    if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+      recreateSwapchain();
+      return false;
+    }
+    if(result != VK_SUCCESS) return false;
+
+    _preparedFrameIndex = frameIndex;
+    _preparedImageIndex = imageIndex;
+    _framePrepared = true;
+    return true;
+  }
+
   auto output(uint width, uint height) -> void {
+    #if defined(BUILD_DEBUG)
     static uint64 outputTraceCounter = 0;
     outputTraceCounter++;
     bool traceOutput = outputTraceCounter <= 120;
+    #else
+    constexpr uint64 outputTraceCounter = 0;
+    constexpr bool traceOutput = false;
+    #endif
     if(traceOutput) {
       fastLinkDebug(
         "NativeVulkan::output[%llu] begin width=%u height=%u device=%d swapchain=%d mapped=%p tex=%d imageCount=%lu frameIndex=%lu",
@@ -382,22 +443,24 @@ struct NativeVideoImplementation {
       return;
     }
 
-    uint32_t frameIndex = _frameIndex % _imageCount;
-    if(vkGetFenceStatus(_device, _fences[frameIndex]) != VK_SUCCESS) {
-      if(traceOutput) fastLinkDebug("NativeVulkan::output[%llu] skipped: fence busy frameIndex=%lu", (unsigned long long)outputTraceCounter, (unsigned long)frameIndex);
-      return;
-    }
-
+    uint32_t frameIndex = 0;
     uint32_t imageIndex = 0;
-    auto result = vkAcquireNextImageKHR(_device, _swapchain, 0, _acquireSemaphores[frameIndex], VK_NULL_HANDLE, &imageIndex);
-    if(traceOutput) fastLinkDebug("NativeVulkan::output[%llu] acquire result=%d imageIndex=%lu", (unsigned long long)outputTraceCounter, result, (unsigned long)imageIndex);
-    if(result == VK_NOT_READY || result == VK_TIMEOUT) return;
-    if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-      if(traceOutput) fastLinkDebug("NativeVulkan::output[%llu] recreate after acquire result=%d", (unsigned long long)outputTraceCounter, result);
-      recreateSwapchain();
-      return;
+    VkResult result = VK_SUCCESS;
+    if(_framePrepared) {
+      frameIndex = _preparedFrameIndex;
+      imageIndex = _preparedImageIndex;
+      _framePrepared = false;
+    } else {
+      frameIndex = _frameIndex % _imageCount;
+      if(vkGetFenceStatus(_device, _fences[frameIndex]) != VK_SUCCESS) return;
+      result = vkAcquireNextImageKHR(_device, _swapchain, 0, _acquireSemaphores[frameIndex], VK_NULL_HANDLE, &imageIndex);
+      if(result == VK_NOT_READY || result == VK_TIMEOUT) return;
+      if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        recreateSwapchain();
+        return;
+      }
+      if(result != VK_SUCCESS) return;
     }
-    if(result != VK_SUCCESS) return;
 
     if(!_stagingCoherent && _stagingMemory && _stagingSize) {
       VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
@@ -418,14 +481,22 @@ struct NativeVideoImplementation {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &_commandBuffers[imageIndex];
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &_renderSemaphores[frameIndex];
+    // A render-finished semaphore follows the swapchain image rather than the
+    // CPU frame slot. Reacquiring an image guarantees its previous present has
+    // released that image and consumed the corresponding semaphore wait.
+    submitInfo.pSignalSemaphores = &_renderSemaphores[imageIndex];
     result = vkQueueSubmit(_queue, 1, &submitInfo, _fences[frameIndex]);
     if(traceOutput) fastLinkDebug("NativeVulkan::output[%llu] queueSubmit result=%d", (unsigned long long)outputTraceCounter, result);
-    if(result != VK_SUCCESS) return;
+    if(result != VK_SUCCESS) {
+      recoverFrameFence(frameIndex);
+      return;
+    }
+    _stagingFrameIndex = frameIndex;
+    _stagingFramePending = true;
 
     VkPresentInfoKHR presentInfo = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &_renderSemaphores[frameIndex];
+    presentInfo.pWaitSemaphores = &_renderSemaphores[imageIndex];
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &_swapchain;
     presentInfo.pImageIndices = &imageIndex;
@@ -548,8 +619,8 @@ struct NativeVideoImplementation {
     return true;
   }
 
-  auto recreateSwapchain() -> void {
-    if(!_device) return;
+  auto recreateSwapchain() -> bool {
+    if(!_device) return false;
     fastLinkDebug("NativeVulkan::recreateSwapchain begin");
     vkDeviceWaitIdle(_device);
 
@@ -572,11 +643,27 @@ struct NativeVideoImplementation {
     }
 
     _imageCount = 0;
-    if(createSwapchain() && createFramebuffers() && createDescriptors()) {
-      refreshDescriptorSets();
-      createCommandBuffers();
-    }
+    bool rebuilt = createSwapchain()
+      && createFramebuffers()
+      && createDescriptors()
+      && refreshDescriptorSets()
+      && createCommandBuffers();
+    _stagingFramePending = false;
+    _frameIndex = 0;
+    _framePrepared = false;
     fastLinkDebug("NativeVulkan::recreateSwapchain done images=%lu", (unsigned long)_imageCount);
+    return rebuilt;
+  }
+
+  auto recoverFrameFence(uint32_t frameIndex) -> void {
+    if(!_device || frameIndex >= _maxImages) return;
+    vkDeviceWaitIdle(_device);
+    if(_fences[frameIndex]) vkDestroyFence(_device, _fences[frameIndex], nullptr);
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    _fences[frameIndex] = VK_NULL_HANDLE;
+    vkCreateFence(_device, &fenceInfo, nullptr, &_fences[frameIndex]);
+    _stagingFramePending = false;
   }
 
   auto createRenderPass() -> bool {
@@ -905,8 +992,12 @@ struct NativeVideoImplementation {
 
   auto ensureTexture(uint width, uint height) -> bool {
     if(_texWidth == width && _texHeight == height && _mappedStaging) return true;
+    #if defined(BUILD_DEBUG)
     static uint textureTraceCounter = 0;
     bool traceTexture = textureTraceCounter++ < 20;
+    #else
+    constexpr bool traceTexture = false;
+    #endif
     if(traceTexture) fastLinkDebug("NativeVulkan::ensureTexture begin width=%u height=%u old=%ux%u", width, height, _texWidth, _texHeight);
 
     if(_device && (_texImage || _stagingBuffer)) {
@@ -1004,14 +1095,14 @@ struct NativeVideoImplementation {
       if(traceTexture) fastLinkDebug("NativeVulkan::ensureTexture vkBindBufferMemory failed result=%d", result);
       return false;
     }
-    result = vkMapMemory(_device, _stagingMemory, 0, stagingSize, 0, &_mappedStaging);
+    result = vkMapMemory(_device, _stagingMemory, 0, stagingMemoryRequirements.size, 0, &_mappedStaging);
     if(result != VK_SUCCESS) {
       if(traceTexture) fastLinkDebug("NativeVulkan::ensureTexture vkMapMemory failed result=%d", result);
       _mappedStaging = nullptr;
       return false;
     }
 
-    _stagingSize = stagingSize;
+    _stagingSize = stagingMemoryRequirements.size;
     _bufferWidth = width;
     _bufferHeight = height;
     _textureLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -1142,6 +1233,11 @@ struct NativeVideoImplementation {
   VkSemaphore _renderSemaphores[_maxImages] = {};
   uint32_t _imageCount = 0;
   uint32_t _frameIndex = 0;
+  uint32_t _stagingFrameIndex = 0;
+  bool _stagingFramePending = false;
+  uint32_t _preparedFrameIndex = 0;
+  uint32_t _preparedImageIndex = 0;
+  bool _framePrepared = false;
   VkExtent2D _swapExtent = {};
   VkFormat _swapFormat = VK_FORMAT_B8G8R8A8_UNORM;
   VkColorSpaceKHR _swapColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
@@ -1323,6 +1419,11 @@ auto NativeVideoManager::release() -> void {
 auto NativeVideoManager::output(uint width, uint height) -> void {
   if(!_ready || !_impl) return;
   _impl->output(width, height);
+}
+
+auto NativeVideoManager::prepare() -> bool {
+  if(!_ready || !_impl) return false;
+  return _impl->prepareFrame();
 }
 
 auto NativeVideoManager::poll() -> void {

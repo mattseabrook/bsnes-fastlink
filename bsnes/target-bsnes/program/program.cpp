@@ -46,6 +46,7 @@ namespace {
 bool windowsLatencyModeActive = false;
 bool ntTimerResolutionActive = false;
 ULONG ntTimerResolutionCurrent = 0;
+GUID* previousPowerScheme = nullptr;
 
 using NtSetTimerResolutionProc = LONG (WINAPI*)(ULONG, BOOLEAN, PULONG);
 
@@ -63,6 +64,8 @@ auto applyThreadAffinity(int processor) -> void {
       if(processMask & ((DWORD_PTR)1 << index)) target = index;
     }
   }
+
+  if(target < 0 || target >= (int)(sizeof(DWORD_PTR) * 8)) return;
 
   DWORD_PTR mask = (DWORD_PTR)1 << target;
   if(!(processMask & mask)) return;
@@ -93,13 +96,29 @@ auto enableHighPerformancePowerScheme() -> void {
   if(!settings.fastLink.windowsHighPerformancePower) return;
   auto powrprof = LoadLibraryW(L"powrprof.dll");
   if(!powrprof) return;
+  using PowerGetActiveSchemeProc = DWORD (WINAPI*)(HKEY, GUID**);
   using PowerSetActiveSchemeProc = DWORD (WINAPI*)(HKEY, const GUID*);
+  auto getActiveScheme = (PowerGetActiveSchemeProc)GetProcAddress(powrprof, "PowerGetActiveScheme");
   auto setActiveScheme = (PowerSetActiveSchemeProc)GetProcAddress(powrprof, "PowerSetActiveScheme");
   if(setActiveScheme) {
+    if(!previousPowerScheme && getActiveScheme) getActiveScheme(nullptr, &previousPowerScheme);
     const GUID highPerformance = {0x8c5e7fda, 0xe8bf, 0x4a96, {0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c, 0x63, 0x5c}};
     setActiveScheme(nullptr, &highPerformance);
   }
   FreeLibrary(powrprof);
+}
+
+auto restorePowerScheme() -> void {
+  if(!previousPowerScheme) return;
+  auto powrprof = LoadLibraryW(L"powrprof.dll");
+  if(powrprof) {
+    using PowerSetActiveSchemeProc = DWORD (WINAPI*)(HKEY, const GUID*);
+    auto setActiveScheme = (PowerSetActiveSchemeProc)GetProcAddress(powrprof, "PowerSetActiveScheme");
+    if(setActiveScheme) setActiveScheme(nullptr, previousPowerScheme);
+    FreeLibrary(powrprof);
+  }
+  LocalFree(previousPowerScheme);
+  previousPowerScheme = nullptr;
 }
 
 auto enableWindowsLatencyMode() -> void {
@@ -117,6 +136,7 @@ auto enableWindowsLatencyMode() -> void {
 }
 
 auto disableWindowsLatencyMode() -> void {
+  restorePowerScheme();
   disableNtTimerResolution();
   if(windowsLatencyModeActive) {
     timeEndPeriod(1);
@@ -136,6 +156,20 @@ LONG WINAPI fastLinkCrashHandler(EXCEPTION_POINTERS* ep) {
 }
 }
 #endif
+
+namespace {
+auto fastLinkFrameDurationNanoseconds(const string& region) -> uint64 {
+  if(region == "PAL") {
+    double frequency = Emulator::Constants::Colorburst::PAL * 4.8;
+    double clocks = 1364.0 * 312.0;
+    return (uint64)(1'000'000'000.0 * clocks / frequency + 0.5);
+  }
+
+  double frequency = Emulator::Constants::Colorburst::NTSC * 6.0;
+  double clocks = 1364.0 * 262.0 - 2.0;  //average one short scanline every other field
+  return (uint64)(1'000'000'000.0 * clocks / frequency + 0.5);
+}
+}
 
 auto Program::create() -> void {
   #if defined(PLATFORM_WINDOWS)
@@ -272,9 +306,14 @@ auto Program::create() -> void {
 }
 
 auto Program::main() -> void {
+  #if defined(BUILD_DEBUG)
   static uint64 mainTraceCounter = 0;
   mainTraceCounter++;
   bool traceFrame = mainTraceCounter <= 2000;
+  #else
+  constexpr uint64 mainTraceCounter = 0;
+  constexpr bool traceFrame = false;
+  #endif
 
   updateStatus();
 
@@ -284,11 +323,16 @@ auto Program::main() -> void {
   inputManager.pollHotkeys();
   video.poll();
 
-  if(Application::modal()) {
+  static bool previouslyModal = false;
+  bool currentlyModal = Application::modal();
+  if(currentlyModal) {
+    if(!previouslyModal) audio.clear();
+    previouslyModal = true;
     if(traceFrame) fastLinkDebug("Program::main[%llu] modal return", (unsigned long long)mainTraceCounter);
     resetFramePacer();
     return;
   }
+  previouslyModal = false;
 
   static bool previouslyInactive = true;
   bool currentlyInactive = inactive();
@@ -308,6 +352,8 @@ auto Program::main() -> void {
   // check if emulator has transitioned from active to inactive or vice versa
   if(previouslyInactive != currentlyInactive) {
     previouslyInactive = currentlyInactive;
+    if(currentlyInactive) audio.clear();
+    else resetFramePacer();
     Application::setScreenSaver(currentlyInactive || settings.general.screenSaver);
   }
 
@@ -325,6 +371,25 @@ auto Program::main() -> void {
     viewportRefresh();
     return;
   }
+
+  // Wait until the frame deadline before entering the core so Raw Input can
+  // continue publishing newer controller state for the core's just-in-time
+  // input polls. Pacing after emulation makes the completed frame sit idle and
+  // increases the age of the input represented by the next presented frame.
+  paceFrame();
+  // Retire the previous GPU upload now, before entering the core. Waiting for
+  // upload ownership from videoFrame() would add a predictable stall after the
+  // core has already sampled input.
+  #if defined(PLATFORM_WINDOWS)
+  if(emulator && emulator->loaded() && !video.prepare()) {
+    // A busy compositor/GPU must not stop the audio producer. Advance one
+    // audio-only frame and retry presentation on the next iteration. This is
+    // preferable to holding the entire emulator behind an unbounded Vulkan
+    // fence or swapchain-image wait and producing an audible underrun.
+    runEmulationFrame(false, true, true);
+    return;
+  }
+  #endif
 
   auto frames = runAheadFrames();
   if(traceFrame) fastLinkDebug("Program::main[%llu] runAheadFrames=%u", (unsigned long long)mainTraceCounter, frames);
@@ -394,14 +459,18 @@ auto Program::main() -> void {
     }
   }
 
-  paceFrame();
   if(traceFrame) fastLinkDebug("Program::main[%llu] done", (unsigned long long)mainTraceCounter);
 }
 
 auto Program::runEmulationFrame(bool videoEnabled, bool audioEnabled, bool accountFrame) -> void {
+  #if defined(BUILD_DEBUG)
   static uint64 runFrameTraceCounter = 0;
   runFrameTraceCounter++;
   bool traceFrame = runFrameTraceCounter <= 240;
+  #else
+  constexpr uint64 runFrameTraceCounter = 0;
+  constexpr bool traceFrame = false;
+  #endif
   if(traceFrame) {
     fastLinkDebug(
       "Program::runEmulationFrame[%llu] begin video=%d audio=%d account=%d",
@@ -452,7 +521,7 @@ auto Program::paceFrame() -> void {
   if(!settings.fastLink.softwareFramePacing || fastForwarding) return resetFramePacer();
   if(settings.video.blocking || settings.audio.blocking) return resetFramePacer();
 
-  uint64 frameDuration = superFamicom.region == "PAL" ? 20'000'000ull : 16'666'667ull;
+  uint64 frameDuration = fastLinkFrameDurationNanoseconds(superFamicom.region);
   auto now = chrono::nanosecond();
   if(!framePaceDeadline || now > framePaceDeadline + frameDuration) {
     framePaceDeadline = now + frameDuration;

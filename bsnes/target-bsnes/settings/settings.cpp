@@ -140,7 +140,10 @@ auto Settings::process(bool load) -> void {
   bind(boolean, "FastLink/DisableSoftwareFilters", fastLink.disableSoftwareFilters);
   bind(boolean, "FastLink/LowLatencyInactiveYield", fastLink.lowLatencyInactiveYield);
   bind(boolean, "FastLink/SoftwareFramePacing", fastLink.softwareFramePacing);
+  #if !defined(PLATFORM_WINDOWS)
   bind(natural, "FastLink/InputPollMicroseconds", fastLink.inputPollMicroseconds);
+  #endif
+  bind(text,    "FastLink/GenericHIDMapping", fastLink.genericHIDMapping);
   bind(integer, "FastLink/MainThreadAffinity", fastLink.mainThreadAffinity);
   bind(integer, "FastLink/InputThreadAffinity", fastLink.inputThreadAffinity);
   bind(boolean, "FastLink/WindowsTimerResolution", fastLink.windowsTimerResolution);
@@ -196,8 +199,13 @@ auto Settings::process(bool load) -> void {
     if(video.swapchainImages < 2) video.swapchainImages = 2;
     if(video.swapchainImages > 4) video.swapchainImages = 4;
     if(fastLink.runAhead > 4) fastLink.runAhead = 4;
+    if(fastLink.genericHIDMapping != "SNES Adapter" && fastLink.genericHIDMapping != "Standard HID") {
+      fastLink.genericHIDMapping = "SNES Adapter";
+    }
+    #if !defined(PLATFORM_WINDOWS)
     if(fastLink.inputPollMicroseconds < 100) fastLink.inputPollMicroseconds = 100;
     if(fastLink.inputPollMicroseconds > 5000) fastLink.inputPollMicroseconds = 5000;
+    #endif
     if(fastLink.disableSoftwareFilters) video.filter = "None";
     emulator.hack.ppu.fast = true;
     if(emulator.hack.ppu.mode7.scale < 2) emulator.hack.ppu.mode7.scale = 4;
@@ -208,6 +216,9 @@ auto Settings::process(bool load) -> void {
     if(audio.driver == "WASAPI") {
       audio.exclusive = false;
       audio.blocking = false;
+    }
+    if(input.defocus == "Pause") {
+      input.defocus = "Block";
     }
     if(video.shader != "None") {
       video.shader = "None";

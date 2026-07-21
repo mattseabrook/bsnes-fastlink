@@ -38,6 +38,8 @@ struct pWindow : pObject {
 
   auto modalIncrement() -> void;
   auto modalDecrement() -> void;
+  auto systemModalIncrement() -> void;
+  auto systemModalDecrement() -> void;
   auto windowProc(HWND, UINT, WPARAM, LPARAM) -> maybe<LRESULT>;
 
   auto _geometry() -> Geometry;

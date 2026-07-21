@@ -94,18 +94,23 @@ struct AudioWASAPI : AudioDriver {
   auto clear() -> void override {
     static uint clearTraceCount = 0;
     if(clearTraceCount++ < 40) WASAPITrace("clear ready=%d audioClient=%p", self.isReady, (void*)self.audioClient);
-    self.queue.read = 0;
-    self.queue.write = 0;
-    self.queue.count = 0;
+    resetQueue();
     if(!self.audioClient) return;
-    self.audioClient->Stop();
-    self.audioClient->Reset();
-    self.audioClient->Start();
+    HRESULT hr = self.audioClient->Stop();
+    if(hr != S_OK && recoverFromDeviceInterrupt(hr)) return;
+    hr = self.audioClient->Reset();
+    if(hr != S_OK && recoverFromDeviceInterrupt(hr)) return;
+    hr = self.audioClient->Start();
+    if(hr != S_OK) recoverFromDeviceInterrupt(hr);
   }
 
   auto output(const double samples[]) -> void override {
+    #if defined(BUILD_DEBUG)
     static uint outputTraceCount = 0;
     bool traceOutput = outputTraceCount++ < 80;
+    #else
+    constexpr bool traceOutput = false;
+    #endif
     if(traceOutput) {
       WASAPITrace(
         "output begin ready=%d audioClient=%p renderClient=%p event=%p queue=%u",
@@ -133,19 +138,14 @@ struct AudioWASAPI : AudioDriver {
     // Pace against one device period worth of audio instead of the entire endpoint buffer.
     // Shared-mode WASAPI can expose a large buffer, and waiting to fill it first creates a fixed startup delay.
     if(self.queue.count >= queueLimit) {
-      if(self.blocking) {
-        while(self.queue.count >= queueLimit) {
-          if(WaitForSingleObject(self.eventHandle, INFINITE) != WAIT_OBJECT_0) break;
-          write();
-        }
-      } else {
-        if(WaitForSingleObject(self.eventHandle, 0) == WAIT_OBJECT_0) {
-          write();
-        }
-        while(self.queue.count >= queueLimit) {
-          self.queue.read++;
-          self.queue.count--;
-        }
+      // Audio::output feeds WASAPI from its dedicated MMCSS worker.  Pace that
+      // worker against the endpoint even when the public "blocking" option is
+      // off; the emulation thread remains nonblocking because it only writes
+      // to Audio's SPSC ring.  Dropping queued samples here caused discontinuous
+      // waveforms (clicks) whenever the UI thread was briefly descheduled.
+      while(self.queue.count >= queueLimit) {
+        if(WaitForSingleObject(self.eventHandle, INFINITE) != WAIT_OBJECT_0) break;
+        if(!write()) break;
       }
     }
 
@@ -169,6 +169,30 @@ private:
     string name;
   };
   vector<Device> devices;
+
+  auto resetQueue() -> void {
+    self.queue.read = 0;
+    self.queue.write = 0;
+    self.queue.count = 0;
+  }
+
+  auto recoverable(HRESULT hr) -> bool {
+    return hr == AUDCLNT_E_DEVICE_INVALIDATED
+        || hr == AUDCLNT_E_RESOURCES_INVALIDATED
+        || hr == AUDCLNT_E_SERVICE_NOT_RUNNING;
+  }
+
+  auto recoverFromDeviceInterrupt(HRESULT hr) -> bool {
+    if(!recoverable(hr) || self.recovering) return false;
+
+    WASAPITrace("recover begin hr=0x%08lx", (unsigned long)hr);
+    self.recovering = true;
+    resetQueue();
+    bool result = initialize();
+    self.recovering = false;
+    WASAPITrace("recover done result=%d ready=%d", result, self.isReady);
+    return result;
+  }
 
   auto construct() -> bool {
     WASAPITrace("construct begin");
@@ -329,7 +353,12 @@ private:
     self.precision = waveFormat->wBitsPerSample;
     CoTaskMemFree(waveFormat);
 
-    clear();
+    resetQueue();
+    hr = self.audioClient->Start();
+    if(hr != S_OK) {
+      WASAPITrace("initialize Start failed hr=0x%08lx", (unsigned long)hr);
+      return false;
+    }
     self.isReady = true;
     WASAPITrace(
       "initialize done ready=%d channels=%u frequency=%u mode=%u precision=%u bufferSize=%lu devicePeriod100ns=%lld shared=1",
@@ -358,8 +387,8 @@ private:
     WASAPITrace("terminate done");
   }
 
-  auto write() -> void {
-    if(!self.audioClient || !self.renderClient) return;
+  auto write() -> bool {
+    if(!self.audioClient || !self.renderClient) return false;
     static uint writeTraceCount = 0;
     bool traceWrite = writeTraceCount++ < 80;
     if(traceWrite) WASAPITrace("write begin queue=%u bufferSize=%lu exclusive=%d", self.queue.count, (unsigned long)self.bufferSize, self.exclusive);
@@ -367,46 +396,65 @@ private:
     uint32_t available = self.bufferSize;
     if(!self.exclusive) {
       uint32_t padding = 0;
-      self.audioClient->GetCurrentPadding(&padding);
+      HRESULT hr = self.audioClient->GetCurrentPadding(&padding);
+      if(hr != S_OK) {
+        WASAPITrace("write GetCurrentPadding failed hr=0x%08lx", (unsigned long)hr);
+        recoverFromDeviceInterrupt(hr);
+        return false;
+      }
+      if(padding > self.bufferSize) padding = self.bufferSize;
       available = self.bufferSize - padding;
     }
     uint32_t length = min(available, self.queue.count);
-    if(length == 0) return;
+    if(length == 0) return true;
 
     uint8_t* buffer = nullptr;
-    if(self.renderClient->GetBuffer(length, &buffer) == S_OK) {
-      uint bufferFlags = 0;
-      for(uint _ : range(length)) {
-        double samples[8] = {};
-        if(self.queue.count) {
-          for(uint n : range(self.channels)) {
-            samples[n] = self.queue.samples[self.queue.read][n];
-          }
-          self.queue.read++;
-          self.queue.count--;
-        }
-
-        if(self.mode == 1 && self.precision == 16) {
-          auto output = (uint16_t*)buffer;
-          for(uint n : range(self.channels)) *output++ = (uint16_t)sclamp<16>(samples[n] * (32768.0 - 1.0));
-          buffer = (uint8_t*)output;
-        } else if(self.mode == 1 && self.precision == 32) {
-          auto output = (uint32_t*)buffer;
-          for(uint n : range(self.channels)) *output++ = (uint32_t)sclamp<32>(samples[n] * (65536.0 * 32768.0 - 1.0));
-          buffer = (uint8_t*)output;
-        } else if(self.mode == 3 && self.precision == 32) {
-          auto output = (float*)buffer;
-          for(uint n : range(self.channels)) *output++ = float(max(-1.0, min(+1.0, samples[n])));
-          buffer = (uint8_t*)output;
-        } else {
-          //output silence for unsupported sample formats
-          bufferFlags = AUDCLNT_BUFFERFLAGS_SILENT;
-          break;
-        }
-      }
-      self.renderClient->ReleaseBuffer(length, bufferFlags);
-      if(traceWrite) WASAPITrace("write ReleaseBuffer length=%lu flags=%u remainingQueue=%u", (unsigned long)length, bufferFlags, self.queue.count);
+    HRESULT hr = self.renderClient->GetBuffer(length, &buffer);
+    if(hr != S_OK) {
+      WASAPITrace("write GetBuffer failed hr=0x%08lx length=%lu", (unsigned long)hr, (unsigned long)length);
+      recoverFromDeviceInterrupt(hr);
+      return false;
     }
+
+    uint bufferFlags = 0;
+    for(uint _ : range(length)) {
+      double samples[8] = {};
+      if(self.queue.count) {
+        for(uint n : range(self.channels)) {
+          samples[n] = self.queue.samples[self.queue.read][n];
+        }
+        self.queue.read++;
+        self.queue.count--;
+      }
+
+      if(self.mode == 1 && self.precision == 16) {
+        auto output = (uint16_t*)buffer;
+        for(uint n : range(self.channels)) *output++ = (uint16_t)sclamp<16>(samples[n] * (32768.0 - 1.0));
+        buffer = (uint8_t*)output;
+      } else if(self.mode == 1 && self.precision == 32) {
+        auto output = (uint32_t*)buffer;
+        for(uint n : range(self.channels)) *output++ = (uint32_t)sclamp<32>(samples[n] * (65536.0 * 32768.0 - 1.0));
+        buffer = (uint8_t*)output;
+      } else if(self.mode == 3 && self.precision == 32) {
+        auto output = (float*)buffer;
+        for(uint n : range(self.channels)) *output++ = float(max(-1.0, min(+1.0, samples[n])));
+        buffer = (uint8_t*)output;
+      } else {
+        //output silence for unsupported sample formats
+        bufferFlags = AUDCLNT_BUFFERFLAGS_SILENT;
+        break;
+      }
+    }
+
+    hr = self.renderClient->ReleaseBuffer(length, bufferFlags);
+    if(hr != S_OK) {
+      WASAPITrace("write ReleaseBuffer failed hr=0x%08lx", (unsigned long)hr);
+      recoverFromDeviceInterrupt(hr);
+      return false;
+    }
+
+    if(traceWrite) WASAPITrace("write ReleaseBuffer length=%lu flags=%u remainingQueue=%u", (unsigned long)length, bufferFlags, self.queue.count);
+    return true;
   }
 
   bool isReady = false;
@@ -429,4 +477,5 @@ private:
   HANDLE taskHandle = nullptr;
   REFERENCE_TIME devicePeriod = 0;
   uint32_t bufferSize = 0;  //in frames
+  bool recovering = false;
 };

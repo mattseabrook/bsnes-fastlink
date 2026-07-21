@@ -121,5 +121,7 @@ protected:
   ::std::condition_variable _workerCV;
   ::std::atomic<bool> _workerRunning{false};
 
+  auto _ringDistance(uint read, uint write) -> uint;
+  auto _ringPush(const double samples[], uint channels) -> void;
   auto _workerMain() -> void;
 };

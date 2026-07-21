@@ -247,9 +247,14 @@ auto Program::load(uint id, string name, string type, vector<string> options) ->
 }
 
 auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height, uint scale) -> void {
+  #if defined(BUILD_DEBUG)
   static uint64 videoFrameTraceCounter = 0;
   videoFrameTraceCounter++;
   bool traceFrame = videoFrameTraceCounter <= 120;
+  #else
+  constexpr uint64 videoFrameTraceCounter = 0;
+  constexpr bool traceFrame = false;
+  #endif
     fastLinkCrashStep("Program::videoFrame: begin");
   if(traceFrame) {
     fastLinkDebug(
@@ -355,9 +360,14 @@ auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height
 }
 
 auto Program::audioFrame(const double* samples, uint channels) -> void {
+  #if defined(BUILD_DEBUG)
   static uint64 audioFrameTraceCounter = 0;
   audioFrameTraceCounter++;
   bool traceFrame = audioFrameTraceCounter <= 80;
+  #else
+  constexpr uint64 audioFrameTraceCounter = 0;
+  constexpr bool traceFrame = false;
+  #endif
   if(traceFrame) {
     fastLinkDebug(
       "Program::audioFrame[%llu] begin samples=%p channels=%u suppressAudio=%d mute=%u ready=%d",

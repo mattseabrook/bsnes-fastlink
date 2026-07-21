@@ -89,6 +89,7 @@ struct Settings : Markup::Node {
     bool lowLatencyInactiveYield = true;
     bool softwareFramePacing = true;
     uint inputPollMicroseconds = 500;
+    string genericHIDMapping = "SNES Adapter";
     int mainThreadAffinity = -2;
     int inputThreadAffinity = -2;
     bool windowsTimerResolution = true;

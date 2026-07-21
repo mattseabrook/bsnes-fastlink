@@ -1,3 +1,7 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <mmsystem.h>
 
 auto CALLBACK waveOutCallback(HWAVEOUT handle, UINT message, DWORD_PTR userData, DWORD_PTR, DWORD_PTR) -> void;
@@ -15,7 +19,7 @@ struct AudioWaveOut : AudioDriver {
   }
 
   auto driver() -> string override { return "waveOut"; }
-  auto ready() -> bool override { return true; }
+  auto ready() -> bool override { return handle != nullptr; }
 
   auto hasDevices() -> vector<string> override {
     vector<string> devices{"Default"};
@@ -38,16 +42,28 @@ struct AudioWaveOut : AudioDriver {
   auto setLatency(uint latency) -> bool override { return initialize(); }
 
   auto clear() -> void override {
+    if(!handle) return;
+    waveOutReset(handle);
+    frameIndex = 0;
+    blockIndex = 0;
+    InterlockedExchange(&blockQueue, 0);
     for(auto& header : headers) {
       memory::fill(header.lpData, frameCount * 4);
     }
+    waveOutRestart(handle);
   }
 
   auto level() -> double override {
-    return (double)((blockQueue * frameCount) + frameIndex) / (blockCount * frameCount);
+    if(!blockCount || !frameCount) return 0.0;
+    LONG queued = blockQueue;
+    if(queued < 0) queued = 0;
+    if(queued > (LONG)blockCount) queued = blockCount;
+    return (double)((queued * frameCount) + frameIndex) / (blockCount * frameCount);
   }
 
   auto output(const double samples[]) -> void override {
+    if(!handle || !ensureWritableBlock()) return;
+
     uint16_t lsample = sclamp<16>(samples[0] * 32767.0);
     uint16_t rsample = sclamp<16>(samples[1] * 32767.0);
 
@@ -56,21 +72,49 @@ struct AudioWaveOut : AudioDriver {
 
     if(++frameIndex >= frameCount) {
       frameIndex = 0;
-      if(self.dynamic) {
-        while(waveOutWrite(handle, &headers[blockIndex], sizeof(WAVEHDR)) == WAVERR_STILLPLAYING);
-        InterlockedIncrement(&blockQueue);
-      } else while(true) {
-        auto result = waveOutWrite(handle, &headers[blockIndex], sizeof(WAVEHDR));
-        if(!self.blocking || result != WAVERR_STILLPLAYING) break;
-        InterlockedIncrement(&blockQueue);
-      }
-      if(++blockIndex >= blockCount) {
-        blockIndex = 0;
-      }
+      submitBlock();
     }
   }
 
 private:
+  auto blockWritable(uint index) -> bool {
+    return !(headers[index].dwFlags & WHDR_INQUEUE);
+  }
+
+  auto ensureWritableBlock() -> bool {
+    bool waitForBlock = self.blocking || self.dynamic;
+
+    for(uint attempt : range(blockCount)) {
+      if(blockWritable(blockIndex)) return true;
+      if(waitForBlock) break;
+      if(++blockIndex >= blockCount) blockIndex = 0;
+      frameIndex = 0;
+    }
+
+    if(!waitForBlock) return false;
+    while(handle && !blockWritable(blockIndex)) Sleep(1);
+    return handle && blockWritable(blockIndex);
+  }
+
+  auto submitBlock() -> void {
+    bool waitForBlock = self.blocking || self.dynamic;
+
+    while(handle) {
+      auto result = waveOutWrite(handle, &headers[blockIndex], sizeof(WAVEHDR));
+      if(result == MMSYSERR_NOERROR) {
+        InterlockedIncrement(&blockQueue);
+        if(++blockIndex >= blockCount) blockIndex = 0;
+        return;
+      }
+
+      if(result != WAVERR_STILLPLAYING || !waitForBlock) {
+        return;
+      }
+
+      Sleep(1);
+    }
+  }
+
   auto initialize() -> bool {
     terminate();
 
@@ -86,7 +130,10 @@ private:
     format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
     format.cbSize = 0;  //not sizeof(WAVEFORMAT); size of extra information after WAVEFORMATEX
     //-1 = default; 0+ = specific device; subtract -1 as hasDevices() includes "Default" entry
-    waveOutOpen(&handle, (int)*deviceIndex - 1, &format, (DWORD_PTR)waveOutCallback, (DWORD_PTR)this, CALLBACK_FUNCTION);
+    if(waveOutOpen(&handle, (int)*deviceIndex - 1, &format, (DWORD_PTR)waveOutCallback, (DWORD_PTR)this, CALLBACK_FUNCTION) != MMSYSERR_NOERROR) {
+      handle = nullptr;
+      return false;
+    }
 
     frameCount = self.latency;
     blockCount = 32;
@@ -133,5 +180,5 @@ public:
 
 auto CALLBACK waveOutCallback(HWAVEOUT handle, UINT message, DWORD_PTR userData, DWORD_PTR, DWORD_PTR) -> void {
   auto instance = (AudioWaveOut*)userData;
-  if(instance->blockQueue > 0) InterlockedDecrement(&instance->blockQueue);
+  if(message == MM_WOM_DONE && instance && instance->blockQueue > 0) InterlockedDecrement(&instance->blockQueue);
 }

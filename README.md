@@ -26,9 +26,9 @@ around the low-latency path:
     serving 128 KiB WRAM snapshots with CORS headers for the Spectra prototype.
   - Updated WASAPI defaults for shared-mode, nonblocking, 48000 Hz output so
     other programs can keep using the sound device.
-  - Added FastLink configuration keys for RAM Trace, run-ahead requests, input
-    polling, thread affinity, timer resolution, software frame pacing, and
-    low-latency defaults.
+  - Added FastLink configuration keys for RAM Trace, run-ahead requests,
+    non-Windows input polling, thread affinity, timer resolution, software frame
+    pacing, and low-latency defaults.
   - Enabled HD Mode 7 defaults in this fork: scale defaults to 4x, perspective
     correction is on, mosaic handling is on, and supersampling is off by default
     for speed.
@@ -44,6 +44,10 @@ current stable Windows build only executes run-ahead when the coroutine backend
 reports stack serialization support. On the current Windows fiber backend that
 support is not available, so run-ahead requests are safely ignored instead of
 using the crash-prone path.
+
+Frame pacing occurs immediately before core execution so the event-driven
+Win32 Raw Input thread can publish controller changes until the latest safe
+point before the SNES polls its controller ports.
 
 RAM Trace HTTP API
 ------------------
@@ -103,6 +107,7 @@ Standard Features
   - Vulkan-focused low-latency video output on Windows
   - Shared-mode WASAPI audio path for low-latency playback while other programs keep audio access
   - Low-latency Win32 Raw Input path
+  - Selectable unknown-device HID mapping via `FastLink/GenericHIDMapping`
   - Localhost RAM Trace HTTP service for external practice tooling
   - Periodic auto-saving of game saves
   - Sprite limit disable support

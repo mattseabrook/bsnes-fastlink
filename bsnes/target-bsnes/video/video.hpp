@@ -81,6 +81,7 @@ struct NativeVideoManager {
   auto acquire(uint width, uint height) -> Acquire;
   auto release() -> void;
   auto output(uint width = 0, uint height = 0) -> void;
+  auto prepare() -> bool;
   auto poll() -> void;
 
   auto onUpdate(const function<void (uint, uint)>& callback) -> void;

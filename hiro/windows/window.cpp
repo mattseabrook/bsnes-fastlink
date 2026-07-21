@@ -262,7 +262,19 @@ auto pWindow::modalIncrement() -> void {
 }
 
 auto pWindow::modalDecrement() -> void {
-  if(--pApplication::state().modalCount == 0) {
+  if(--pApplication::state().modalCount == 0 && pApplication::state().systemModalCount == 0) {
+    pApplication::state().modalTimer.setEnabled(false);
+  }
+}
+
+auto pWindow::systemModalIncrement() -> void {
+  if(pApplication::state().systemModalCount++ == 0) {
+    pApplication::state().modalTimer.setEnabled(true);
+  }
+}
+
+auto pWindow::systemModalDecrement() -> void {
+  if(pApplication::state().systemModalCount > 0 && --pApplication::state().systemModalCount == 0 && pApplication::state().modalCount == 0) {
     pApplication::state().modalTimer.setEnabled(false);
   }
 }
@@ -315,12 +327,12 @@ auto pWindow::windowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) -> m
   }
 
   if(msg == WM_ENTERMENULOOP || msg == WM_ENTERSIZEMOVE) {
-    modalIncrement();
+    systemModalIncrement();
     return false;
   }
 
   if(msg == WM_EXITMENULOOP || msg == WM_EXITSIZEMOVE) {
-    modalDecrement();
+    systemModalDecrement();
     return false;
   }
 

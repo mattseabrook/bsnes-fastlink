@@ -15,6 +15,7 @@ struct pApplication {
 
   struct State {
     int modalCount = 0;           //number of modal loops
+    int systemModalCount = 0;     //number of OS menu/move/size loops
     Timer modalTimer;             //to run Application during modal events
     pToolTip* toolTip = nullptr;  //active toolTip
   };
