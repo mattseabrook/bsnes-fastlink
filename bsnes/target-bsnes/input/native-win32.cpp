@@ -60,10 +60,58 @@ auto applyNativeInputThreadAffinity() -> void {
 
   int target = processor;
   if(target < 0) {
-    target = 0;
-    for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
-      if(processMask & ((DWORD_PTR)1 << index)) target = index;
+    // Automatic affinity keeps the input publisher off the main emulator
+    // thread's physical core.  In particular, the default -2/-2 settings no
+    // longer resolve both threads to the final logical processor.
+    int mainProcessor = settings.fastLink.mainThreadAffinity;
+    if(mainProcessor < 0) {
+      mainProcessor = 0;
+      for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
+        if(processMask & ((DWORD_PTR)1 << index)) mainProcessor = index;
+      }
     }
+    if(
+      mainProcessor < 0
+      || mainProcessor >= (int)(sizeof(DWORD_PTR) * 8)
+      || !(processMask & ((DWORD_PTR)1 << mainProcessor))
+    ) {
+      mainProcessor = 0;
+      for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
+        if(processMask & ((DWORD_PTR)1 << index)) mainProcessor = index;
+      }
+    }
+
+    DWORD_PTR mainCoreMask = (DWORD_PTR)1 << mainProcessor;
+    DWORD bytes = 0;
+    GetLogicalProcessorInformation(nullptr, &bytes);
+    if(bytes) {
+      auto count = bytes / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+      vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> topology;
+      topology.resize(count);
+      if(GetLogicalProcessorInformation(topology.data(), &bytes)) {
+        for(auto& entry : topology) {
+          if(entry.Relationship == RelationProcessorCore && (entry.ProcessorMask & mainCoreMask)) {
+            mainCoreMask = entry.ProcessorMask;
+            break;
+          }
+        }
+      }
+    }
+
+    target = -1;
+    for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
+      DWORD_PTR candidate = (DWORD_PTR)1 << index;
+      if((processMask & candidate) && !(mainCoreMask & candidate)) target = index;
+    }
+    // Single-core systems still get separate logical processors when one is
+    // available; otherwise sharing the only processor is unavoidable.
+    if(target < 0) {
+      for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
+        DWORD_PTR candidate = (DWORD_PTR)1 << index;
+        if((processMask & candidate) && index != (uint)mainProcessor) target = index;
+      }
+    }
+    if(target < 0) target = mainProcessor;
   }
 
   if(target < 0 || target >= (int)(sizeof(DWORD_PTR) * 8)) return;

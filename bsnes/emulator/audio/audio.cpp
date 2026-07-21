@@ -36,6 +36,14 @@ auto Audio::createStream(uint channels, double frequency) -> shared_pointer<Stre
   return stream;
 }
 
+auto Audio::serialize(serializer& s) -> void {
+  // Streams are created during core power-on and remain stable while a game
+  // is running. Their resampler histories and pending queues are frontend
+  // audio state: speculative run-ahead advances them even when platform audio
+  // output is suppressed, so Program snapshots them alongside the core.
+  for(auto& stream : _streams) stream->serialize(s);
+}
+
 auto Audio::process() -> void {
   while(_streams) {
     for(auto& stream : _streams) {

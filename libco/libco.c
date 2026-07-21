@@ -7,8 +7,13 @@
 #endif
 
 #if defined(__clang__) || defined(__GNUC__)
-  #if defined(_WIN32)
-    #include "fiber.c"
+  #if defined(_WIN32) && (defined(__x86_64__) || defined(__amd64__))
+    /* Windows fibers own their stacks, so deterministic save states cannot
+       serialize them.  The amd64 backend implements the Win64 ABI and keeps
+       coroutine stacks in libco-owned memory. */
+    #include "amd64.c"
+  #elif defined(_WIN32) && defined(__i386__)
+    #include "x86.c"
   #elif defined(__i386__)
     #include "x86.c"
   #elif defined(__amd64__)

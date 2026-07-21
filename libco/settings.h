@@ -54,6 +54,11 @@
    - alignas can be used multiple times; the strictest one wins.
    - alignas (TYPE) is equivalent to alignas (alignof (TYPE)).
 */
+#if !defined(alignas) && defined(_MSC_VER)
+  /* clang-cl compiling a .c file defines _MSC_VER but may omit __STDC__. */
+  #define alignas(bytes) __declspec(align(bytes))
+#endif
+
 #if !defined(alignas) 
   #if defined(__STDC__) /* C Language */
     #if defined(_MSC_VER) /* Don't rely on MSVC's C11 support */

@@ -382,11 +382,10 @@ auto Program::main() -> void {
   // core has already sampled input.
   #if defined(PLATFORM_WINDOWS)
   if(emulator && emulator->loaded() && !video.prepare()) {
-    // A busy compositor/GPU must not stop the audio producer. Advance one
-    // audio-only frame and retry presentation on the next iteration. This is
-    // preferable to holding the entire emulator behind an unbounded Vulkan
-    // fence or swapchain-image wait and producing an audible underrun.
-    runEmulationFrame(false, true, true);
+    // Do not advance emulation without presenting the completed frame.  The
+    // Vulkan backend waits for ordinary GPU/swapchain pressure; reaching this
+    // path indicates a real surface/device failure.
+    resetFramePacer();
     return;
   }
   #endif
@@ -422,6 +421,15 @@ auto Program::main() -> void {
       if(traceFrame) fastLinkDebug("Program::main[%llu] real serialize empty; rendering recovery frame", (unsigned long long)mainTraceCounter);
       runEmulationFrame(true, true, true);
     } else {
+      // The core state does not own Emulator::Audio's stream resamplers. Save
+      // them separately so speculative frames cannot leave interpolation
+      // history one frame ahead of the restored DSP state (an audible click at
+      // every run-ahead boundary).
+      serializer audioStateSize;
+      Emulator::audio.serialize(audioStateSize);
+      serializer realAudio{audioStateSize.size()};
+      Emulator::audio.serialize(realAudio);
+
       auto realTurboCounter = inputManager.turboCounter;
       for(uint frame : range(frames)) {
         if(traceFrame) fastLinkDebug(
@@ -441,6 +449,10 @@ auto Program::main() -> void {
       serializer restore{realFrame.data(), (uint)realFrame.size()};
       if(traceFrame) fastLinkDebug("Program::main[%llu] restoring real frame", (unsigned long long)mainTraceCounter);
       bool restored = emulator->unserialize(restore);
+      if(realAudio.size()) {
+        serializer audioRestore{realAudio.data(), realAudio.size()};
+        Emulator::audio.serialize(audioRestore);
+      }
       inputManager.turboCounter = realTurboCounter;
       if(!restored) resetRunAheadWarmup();
       if(traceFrame) fastLinkDebug("Program::main[%llu] restored real frame=%d", (unsigned long long)mainTraceCounter, restored);
@@ -486,7 +498,18 @@ auto Program::runEmulationFrame(bool videoEnabled, bool audioEnabled, bool accou
   suppressVideoFrame = !videoEnabled;
   suppressAudioFrame = !audioEnabled;
   suppressFrameAccounting = !accountFrame;
+
+  // Fast PPU rendering is by far the largest cost of discarded run-ahead
+  // frames (especially at HD Mode 7 scales).  Frame-skip suppresses that work
+  // inside the core, rather than waiting until platform->videoFrame() to throw
+  // the completed pixels away.  Run-ahead is disabled during fast-forward, so
+  // the normal value here is zero; preserve it for callers that use another
+  // frame-skip policy.
+  auto previousFrameSkip = emulator->frameSkip();
+  bool suppressCoreRendering = !videoEnabled && previousFrameSkip == 0;
+  if(suppressCoreRendering) emulator->setFrameSkip(1);
   emulator->run();
+  if(suppressCoreRendering) emulator->setFrameSkip(previousFrameSkip);
   suppressVideoFrame = previousVideo;
   suppressAudioFrame = previousAudio;
   suppressFrameAccounting = previousAccounting;
@@ -495,14 +518,20 @@ auto Program::runEmulationFrame(bool videoEnabled, bool audioEnabled, bool accou
 
 auto Program::runAheadFrames() const -> uint {
   if(!emulator || !emulator->loaded()) return 0;
-  if(!settings.fastLink.runAhead) return 0;
+  auto requestedFrames = settings.fastLink.runAhead;
+  #if defined(PLATFORM_WINDOWS)
+  // Keep the Windows fast path enabled even if configuration is mutated after
+  // startup; Settings::process() also persists this normalization on load.
+  requestedFrames = max(1u, requestedFrames);
+  #endif
+  if(!requestedFrames) return 0;
   if(!co_serializable()) {
     static bool logged = false;
     if(!logged) {
       logged = true;
       fastLinkDebug(
         "Program::runAheadFrames disabled for this process: libco backend is not stack-serializable; requested=%u",
-        settings.fastLink.runAhead
+        requestedFrames
       );
     }
     return 0;
@@ -510,7 +539,7 @@ auto Program::runAheadFrames() const -> uint {
   if(runAheadWarmupFrames) return 0;
   if(frameAdvanceLock || presentation.frameAdvance.checked()) return 0;
   if(fastForwarding) return 0;
-  return min(4u, settings.fastLink.runAhead);
+  return min(4u, requestedFrames);
 }
 
 auto Program::resetRunAheadWarmup() -> void {

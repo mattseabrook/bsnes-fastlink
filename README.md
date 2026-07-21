@@ -39,15 +39,27 @@ around the low-latency path:
 Run-Ahead Status
 ----------------
 
-`FastLink/RunAhead` is exposed in the config and clamped to 0-4 frames. The
-current stable Windows build only executes run-ahead when the coroutine backend
-reports stack serialization support. On the current Windows fiber backend that
-support is not available, so run-ahead requests are safely ignored instead of
-using the crash-prone path.
+`FastLink/RunAhead` is exposed in the config and clamped to 0-4 frames generally
+(1-4 on Windows). The
+x64 Windows build uses libco's serializable Win64 coroutine backend, allowing
+deterministic run-ahead states without relying on opaque Windows fiber stacks.
+Discarded fast-PPU frames also suppress rasterization inside the core, avoiding
+HD Mode 7 work for frames that will never be presented.
+The audio stream resamplers are restored with each run-ahead state so
+speculative samples cannot create waveform discontinuities in committed audio.
+
+On Windows the low-latency profile enforces a minimum of one run-ahead frame;
+older configuration files containing `FastLink/RunAhead: 0` are normalized to
+`1` when loaded.
 
 Frame pacing occurs immediately before core execution so the event-driven
 Win32 Raw Input thread can publish controller changes until the latest safe
 point before the SNES polls its controller ports.
+
+The native Vulkan driver waits for upload ownership and a swapchain image
+before core execution rather than dropping a newly emulated frame. Its true
+fullscreen path requests `VK_EXT_full_screen_exclusive` when supported, with a
+borderless fullscreen fallback on drivers that do not expose the extension.
 
 RAM Trace HTTP API
 ------------------

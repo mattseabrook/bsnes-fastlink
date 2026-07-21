@@ -198,6 +198,9 @@ auto Settings::process(bool load) -> void {
     }
     if(video.swapchainImages < 2) video.swapchainImages = 2;
     if(video.swapchainImages > 4) video.swapchainImages = 4;
+    // Run-ahead is mandatory on the Windows low-latency build. Normalize old
+    // configurations that explicitly disabled it back to one frame.
+    if(fastLink.runAhead < 1) fastLink.runAhead = 1;
     if(fastLink.runAhead > 4) fastLink.runAhead = 4;
     if(fastLink.genericHIDMapping != "SNES Adapter" && fastLink.genericHIDMapping != "Standard HID") {
       fastLink.genericHIDMapping = "SNES Adapter";

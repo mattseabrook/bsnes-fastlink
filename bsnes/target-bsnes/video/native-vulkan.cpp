@@ -12,6 +12,11 @@
 #include <vulkan/vulkan.h>
 
 namespace {
+auto CALLBACK NativeVideoWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) -> LRESULT {
+  if(message == WM_SYSKEYDOWN && wparam == VK_F4) return 0;
+  return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
 auto CALLBACK NativeMonitorEnumProc(HMONITOR hMonitor, HDC, LPRECT lprcMonitor, LPARAM dwData) -> BOOL {
   auto& monitors = *(vector<NativeVideoManager::Monitor>*)dwData;
 
@@ -86,6 +91,48 @@ struct NativeVideoImplementation {
     fastLinkDebug("NativeVulkan::initialize after terminate");
 
     auto hwnd = (HWND)owner.context();
+    if(owner.fullScreen()) {
+      auto monitors = owner.hasMonitors();
+      NativeVideoManager::Monitor selected;
+      bool found = false;
+      for(auto& monitor : monitors) {
+        if(monitor.name == owner.monitor()) {
+          selected = monitor;
+          found = true;
+          break;
+        }
+      }
+      if(!found && monitors) {
+        selected = monitors.first();
+        found = true;
+      }
+      if(!found) return false;
+
+      WNDCLASSW windowClass = {};
+      windowClass.hInstance = GetModuleHandle(nullptr);
+      windowClass.lpfnWndProc = NativeVideoWindowProc;
+      windowClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
+      windowClass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+      windowClass.lpszClassName = L"BsnesFastlinkVulkanFullscreen";
+      if(!RegisterClassW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+
+      _fullScreenWindow = CreateWindowExW(
+        WS_EX_TOPMOST,
+        windowClass.lpszClassName,
+        L"bsnes-fastlink",
+        WS_VISIBLE | WS_POPUP,
+        selected.x, selected.y, selected.width, selected.height,
+        nullptr, nullptr, windowClass.hInstance, nullptr
+      );
+      if(!_fullScreenWindow) return false;
+      hwnd = _fullScreenWindow;
+      POINT point = {selected.x + selected.width / 2, selected.y + selected.height / 2};
+      _monitorHandle = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+      SetForegroundWindow(hwnd);
+      SetFocus(hwnd);
+    } else {
+      _monitorHandle = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    }
     if(!hwnd || !IsWindow(hwnd)) {
       fastLinkDebug("NativeVulkan::initialize failed: invalid hwnd=%p", (void*)hwnd);
       return false;
@@ -139,15 +186,18 @@ struct NativeVideoImplementation {
       vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extensionCount, nullptr);
       if(!extensionCount) continue;
 
-      VkExtensionProperties extensions[64] = {};
-      if(extensionCount > 64) extensionCount = 64;
-      vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extensionCount, extensions);
+      vector<VkExtensionProperties> extensions;
+      extensions.resize(extensionCount);
+      vkEnumerateDeviceExtensionProperties(candidate, nullptr, &extensionCount, extensions.data());
 
       bool hasSwapchain = false;
+      bool hasFullScreenExclusive = false;
       for(uint32_t extensionIndex = 0; extensionIndex < extensionCount; extensionIndex++) {
         if(!strcmp(extensions[extensionIndex].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
           hasSwapchain = true;
-          break;
+        }
+        if(!strcmp(extensions[extensionIndex].extensionName, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME)) {
+          hasFullScreenExclusive = true;
         }
       }
       if(!hasSwapchain) continue;
@@ -167,6 +217,7 @@ struct NativeVideoImplementation {
         if(!presentSupported) continue;
         _physicalDevice = candidate;
         _queueFamily = queueFamily;
+        _fullScreenExclusiveSupported = hasFullScreenExclusive;
         break;
       }
 
@@ -185,11 +236,15 @@ struct NativeVideoImplementation {
     queueInfo.queueCount = 1;
     queueInfo.pQueuePriorities = &priority;
 
-    const char* deviceExtensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const char* deviceExtensions[2] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    uint32_t deviceExtensionCount = 1;
+    if(_fullScreenExclusiveSupported) {
+      deviceExtensions[deviceExtensionCount++] = VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME;
+    }
     VkDeviceCreateInfo deviceInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     deviceInfo.queueCreateInfoCount = 1;
     deviceInfo.pQueueCreateInfos = &queueInfo;
-    deviceInfo.enabledExtensionCount = 1;
+    deviceInfo.enabledExtensionCount = deviceExtensionCount;
     deviceInfo.ppEnabledExtensionNames = deviceExtensions;
     fastLinkDebug("NativeVulkan::initialize vkCreateDevice begin");
     result = vkCreateDevice(_physicalDevice, &deviceInfo, nullptr, &_device);
@@ -198,6 +253,16 @@ struct NativeVideoImplementation {
       return false;
     }
     fastLinkDebug("NativeVulkan::initialize vkCreateDevice ok");
+
+    if(_fullScreenExclusiveSupported) {
+      _acquireFullScreenExclusiveMode = (PFN_vkAcquireFullScreenExclusiveModeEXT)
+        vkGetDeviceProcAddr(_device, "vkAcquireFullScreenExclusiveModeEXT");
+      _releaseFullScreenExclusiveMode = (PFN_vkReleaseFullScreenExclusiveModeEXT)
+        vkGetDeviceProcAddr(_device, "vkReleaseFullScreenExclusiveModeEXT");
+      if(!_acquireFullScreenExclusiveMode || !_releaseFullScreenExclusiveMode) {
+        _fullScreenExclusiveSupported = false;
+      }
+    }
 
     vkGetDeviceQueue(_device, _queueFamily, 0, &_queue);
 
@@ -259,6 +324,7 @@ struct NativeVideoImplementation {
   auto terminate() -> void {
     if(_instance || _device || _swapchain) fastLinkDebug("NativeVulkan::terminate begin device=%d swapchain=%d images=%lu", _device != VK_NULL_HANDLE, _swapchain != VK_NULL_HANDLE, (unsigned long)_imageCount);
     if(_device) vkDeviceWaitIdle(_device);
+    releaseFullScreenExclusive();
 
     destroyTexture();
 
@@ -296,6 +362,7 @@ struct NativeVideoImplementation {
     if(_surface) vkDestroySurfaceKHR(_instance, _surface, nullptr);
     if(_device) vkDestroyDevice(_device, nullptr);
     if(_instance) vkDestroyInstance(_instance, nullptr);
+    if(_fullScreenWindow) DestroyWindow(_fullScreenWindow);
 
     _instance = VK_NULL_HANDLE;
     _physicalDevice = VK_NULL_HANDLE;
@@ -318,6 +385,13 @@ struct NativeVideoImplementation {
     _preparedFrameIndex = 0;
     _preparedImageIndex = 0;
     _framePrepared = false;
+    _recreateAfterPresent = false;
+    _fullScreenWindow = nullptr;
+    _monitorHandle = nullptr;
+    _fullScreenExclusiveSupported = false;
+    _fullScreenExclusiveAcquired = false;
+    _acquireFullScreenExclusiveMode = nullptr;
+    _releaseFullScreenExclusiveMode = nullptr;
     _swapExtent = {};
     fastLinkDebug("NativeVulkan::terminate done");
   }
@@ -366,11 +440,12 @@ struct NativeVideoImplementation {
   auto prepareUpload() -> bool {
     if(!_device) return false;
     if(!_stagingFramePending) return true;
-    // Never let GPU scheduling stall the emulation/audio producer.  The main
-    // loop can run an audio-only frame and try this upload slot again on its
-    // next iteration.
-    auto waitResult = vkGetFenceStatus(_device, _fences[_stagingFrameIndex]);
-    if(waitResult == VK_NOT_READY) return false;
+    // This wait happens before emulation/input sampling in Program::main().
+    // Waiting preserves every frame and makes ownership of the single mapped
+    // upload buffer explicit without adding post-input latency.
+    auto waitResult = vkWaitForFences(
+      _device, 1, &_fences[_stagingFrameIndex], VK_TRUE, UINT64_MAX
+    );
     if(waitResult != VK_SUCCESS) return false;
     _stagingFramePending = false;
     return true;
@@ -383,25 +458,32 @@ struct NativeVideoImplementation {
     auto clientSize = owner.currentClientSize();
     if(!clientSize.width || !clientSize.height) return false;
 
-    uint32_t frameIndex = _frameIndex % _imageCount;
-    if(vkGetFenceStatus(_device, _fences[frameIndex]) != VK_SUCCESS) return false;
+    for(uint attempt = 0; attempt < 2; attempt++) {
+      uint32_t frameIndex = _frameIndex % _imageCount;
+      if(vkWaitForFences(_device, 1, &_fences[frameIndex], VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        return false;
+      }
 
-    uint32_t imageIndex = 0;
-    auto result = vkAcquireNextImageKHR(
-      _device, _swapchain, 0,
-      _acquireSemaphores[frameIndex], VK_NULL_HANDLE, &imageIndex
-    );
-    if(result == VK_NOT_READY || result == VK_TIMEOUT) return false;
-    if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-      recreateSwapchain();
-      return false;
+      uint32_t imageIndex = 0;
+      auto result = vkAcquireNextImageKHR(
+        _device, _swapchain, UINT64_MAX,
+        _acquireSemaphores[frameIndex], VK_NULL_HANDLE, &imageIndex
+      );
+      if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
+        if(!recreateSwapchain()) return false;
+        continue;
+      }
+      // VK_SUBOPTIMAL_KHR still returns a valid acquired image.  Submit it and
+      // rebuild after present so its acquire semaphore is consumed normally.
+      if(result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) return false;
+
+      _preparedFrameIndex = frameIndex;
+      _preparedImageIndex = imageIndex;
+      _framePrepared = true;
+      _recreateAfterPresent = result == VK_SUBOPTIMAL_KHR;
+      return true;
     }
-    if(result != VK_SUCCESS) return false;
-
-    _preparedFrameIndex = frameIndex;
-    _preparedImageIndex = imageIndex;
-    _framePrepared = true;
-    return true;
+    return false;
   }
 
   auto output(uint width, uint height) -> void {
@@ -443,24 +525,11 @@ struct NativeVideoImplementation {
       return;
     }
 
-    uint32_t frameIndex = 0;
-    uint32_t imageIndex = 0;
+    if(!_framePrepared && !prepareFrame()) return;
+    uint32_t frameIndex = _preparedFrameIndex;
+    uint32_t imageIndex = _preparedImageIndex;
+    _framePrepared = false;
     VkResult result = VK_SUCCESS;
-    if(_framePrepared) {
-      frameIndex = _preparedFrameIndex;
-      imageIndex = _preparedImageIndex;
-      _framePrepared = false;
-    } else {
-      frameIndex = _frameIndex % _imageCount;
-      if(vkGetFenceStatus(_device, _fences[frameIndex]) != VK_SUCCESS) return;
-      result = vkAcquireNextImageKHR(_device, _swapchain, 0, _acquireSemaphores[frameIndex], VK_NULL_HANDLE, &imageIndex);
-      if(result == VK_NOT_READY || result == VK_TIMEOUT) return;
-      if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-        recreateSwapchain();
-        return;
-      }
-      if(result != VK_SUCCESS) return;
-    }
 
     if(!_stagingCoherent && _stagingMemory && _stagingSize) {
       VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
@@ -504,8 +573,14 @@ struct NativeVideoImplementation {
     _frameIndex = (_frameIndex + 1) % _maxImages;
     if(traceOutput) fastLinkDebug("NativeVulkan::output[%llu] present result=%d nextFrameIndex=%lu", (unsigned long long)outputTraceCounter, result, (unsigned long)_frameIndex);
 
-    if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+    if(
+      result == VK_ERROR_OUT_OF_DATE_KHR
+      || result == VK_SUBOPTIMAL_KHR
+      || result == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT
+      || _recreateAfterPresent
+    ) {
       if(traceOutput) fastLinkDebug("NativeVulkan::output[%llu] recreate after present result=%d", (unsigned long long)outputTraceCounter, result);
+      _recreateAfterPresent = false;
       recreateSwapchain();
       return;
     }
@@ -586,8 +661,22 @@ struct NativeVideoImplementation {
     fastLinkDebug("NativeVulkan::createSwapchain presentModes=%lu chosen=%d", (unsigned long)presentModeCount, presentMode);
 
     auto oldSwapchain = _swapchain;
+    releaseFullScreenExclusive();
+
+    VkSurfaceFullScreenExclusiveWin32InfoEXT win32ExclusiveInfo = {
+      VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT
+    };
+    win32ExclusiveInfo.hmonitor = _monitorHandle;
+    VkSurfaceFullScreenExclusiveInfoEXT exclusiveInfo = {
+      VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT
+    };
+    exclusiveInfo.pNext = &win32ExclusiveInfo;
+    exclusiveInfo.fullScreenExclusive = owner.fullScreen()
+      ? VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT
+      : VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
 
     VkSwapchainCreateInfoKHR swapInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    if(_fullScreenExclusiveSupported) swapInfo.pNext = &exclusiveInfo;
     swapInfo.surface = _surface;
     swapInfo.minImageCount = minImages;
     swapInfo.imageFormat = _swapFormat;
@@ -615,7 +704,17 @@ struct NativeVideoImplementation {
     vkGetSwapchainImagesKHR(_device, _swapchain, &_imageCount, nullptr);
     if(_imageCount > _maxImages) _imageCount = _maxImages;
     vkGetSwapchainImagesKHR(_device, _swapchain, &_imageCount, _swapImages);
-    fastLinkDebug("NativeVulkan::createSwapchain done images=%lu", (unsigned long)_imageCount);
+    if(owner.fullScreen() && _fullScreenExclusiveSupported) {
+      result = _acquireFullScreenExclusiveMode(_device, _swapchain);
+      _fullScreenExclusiveAcquired = result == VK_SUCCESS;
+      fastLinkDebug("NativeVulkan::createSwapchain acquire exclusive result=%d acquired=%d", result, _fullScreenExclusiveAcquired);
+    }
+    fastLinkDebug(
+      "NativeVulkan::createSwapchain done images=%lu exclusiveSupported=%d exclusiveAcquired=%d",
+      (unsigned long)_imageCount,
+      _fullScreenExclusiveSupported,
+      _fullScreenExclusiveAcquired
+    );
     return true;
   }
 
@@ -623,6 +722,7 @@ struct NativeVideoImplementation {
     if(!_device) return false;
     fastLinkDebug("NativeVulkan::recreateSwapchain begin");
     vkDeviceWaitIdle(_device);
+    releaseFullScreenExclusive();
 
     if(_imageCount && _commandPool) {
       vkFreeCommandBuffers(_device, _commandPool, _imageCount, _commandBuffers);
@@ -651,8 +751,16 @@ struct NativeVideoImplementation {
     _stagingFramePending = false;
     _frameIndex = 0;
     _framePrepared = false;
+    _recreateAfterPresent = false;
     fastLinkDebug("NativeVulkan::recreateSwapchain done images=%lu", (unsigned long)_imageCount);
     return rebuilt;
+  }
+
+  auto releaseFullScreenExclusive() -> void {
+    if(!_fullScreenExclusiveAcquired || !_releaseFullScreenExclusiveMode || !_device || !_swapchain) return;
+    auto result = _releaseFullScreenExclusiveMode(_device, _swapchain);
+    fastLinkDebug("NativeVulkan::releaseFullScreenExclusive result=%d", result);
+    _fullScreenExclusiveAcquired = false;
   }
 
   auto recoverFrameFence(uint32_t frameIndex) -> void {
@@ -1213,6 +1321,8 @@ struct NativeVideoImplementation {
   void* _mappedStaging = nullptr;
   uint _bufferWidth = 0;
   uint _bufferHeight = 0;
+  HWND _fullScreenWindow = nullptr;
+  HMONITOR _monitorHandle = nullptr;
 
   VkInstance _instance = VK_NULL_HANDLE;
   VkPhysicalDevice _physicalDevice = VK_NULL_HANDLE;
@@ -1238,6 +1348,7 @@ struct NativeVideoImplementation {
   uint32_t _preparedFrameIndex = 0;
   uint32_t _preparedImageIndex = 0;
   bool _framePrepared = false;
+  bool _recreateAfterPresent = false;
   VkExtent2D _swapExtent = {};
   VkFormat _swapFormat = VK_FORMAT_B8G8R8A8_UNORM;
   VkColorSpaceKHR _swapColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
@@ -1259,6 +1370,11 @@ struct NativeVideoImplementation {
   uint _texHeight = 0;
   bool _stagingCoherent = true;
   VkImageLayout _textureLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+  bool _fullScreenExclusiveSupported = false;
+  bool _fullScreenExclusiveAcquired = false;
+  PFN_vkAcquireFullScreenExclusiveModeEXT _acquireFullScreenExclusiveMode = nullptr;
+  PFN_vkReleaseFullScreenExclusiveModeEXT _releaseFullScreenExclusiveMode = nullptr;
 
   VkCommandPool _commandPool = VK_NULL_HANDLE;
 };
@@ -1332,13 +1448,17 @@ auto NativeVideoManager::create(string driver) -> bool {
 }
 
 auto NativeVideoManager::setFullScreen(bool fullScreen) -> bool {
+  if(_fullScreen == fullScreen) return true;
   _fullScreen = fullScreen;
-  return false;
+  if(_impl && _ready) return initialize();
+  return true;
 }
 
 auto NativeVideoManager::setMonitor(string monitor) -> bool {
   if(!hasMonitor(monitor)) return false;
+  if(_monitor == monitor || (monitor == "Primary" && _monitor == defaultMonitorName())) return true;
   _monitor = monitor == "Primary" ? defaultMonitorName() : monitor;
+  if(_fullScreen && _impl && _ready) return initialize();
   return true;
 }
 
@@ -1394,7 +1514,7 @@ auto NativeVideoManager::setShader(string shader) -> bool {
 }
 
 auto NativeVideoManager::focused() -> bool {
-  auto hwnd = (HWND)_context;
+  auto hwnd = _fullScreen && _impl ? _impl->_fullScreenWindow : (HWND)_context;
   if(!hwnd || !IsWindow(hwnd)) return true;
   auto root = GetAncestor(hwnd, GA_ROOT);
   return GetForegroundWindow() == root;
@@ -1458,6 +1578,14 @@ auto NativeVideoManager::defaultMonitorName() const -> string {
 }
 
 auto NativeVideoManager::currentClientSize() const -> Size {
+  if(_fullScreen) {
+    for(auto& monitor : hasMonitors()) {
+      if(monitor.name == _monitor) return {(uint)monitor.width, (uint)monitor.height};
+    }
+    auto monitors = hasMonitors();
+    if(monitors) return {(uint)monitors.first().width, (uint)monitors.first().height};
+  }
+
   auto hwnd = (HWND)_context;
   if(!hwnd || !IsWindow(hwnd)) return {};
 

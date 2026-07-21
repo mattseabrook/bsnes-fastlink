@@ -45,8 +45,8 @@ struct NativeVideoManager {
   auto driver() const -> string { return _driver; }
   auto ready() const -> bool { return _ready; }
 
-  auto hasFullScreen() const -> bool { return false; }
-  auto hasExclusive() const -> bool { return false; }
+  auto hasFullScreen() const -> bool { return true; }
+  auto hasExclusive() const -> bool { return true; }
   auto hasBlocking() const -> bool { return false; }
   auto hasFlush() const -> bool { return true; }
   auto hasFormats() const -> vector<string> { return {"ARGB24"}; }
