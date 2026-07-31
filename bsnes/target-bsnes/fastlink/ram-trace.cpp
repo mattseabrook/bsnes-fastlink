@@ -20,7 +20,13 @@ namespace {
 using SocketHandle = SOCKET;
 
 constexpr SocketHandle InvalidSocket = INVALID_SOCKET;
-constexpr uint32_t RequestWaitMilliseconds = 2;
+// A snapshot can only become newer at an emulation-frame boundary.  A short
+// timeout lets an unpaced client spin on stale snapshots, churning sockets and
+// sending 128 KiB hundreds of times per second.  Active requests are woken by
+// the next published emulation frame; the longer fallback only matters while
+// paused or stalled, where it caps stale traffic at 10 responses per second
+// without ever blocking the emulation thread.
+constexpr uint32_t RequestWaitMilliseconds = 100;
 constexpr char HTTPHeader[] =
   "HTTP/1.1 200 OK\r\n"
   "Content-Type: application/octet-stream\r\n"
@@ -125,7 +131,7 @@ auto FastLinkRAMTraceService::clearSnapshot() -> void {
 auto FastLinkRAMTraceService::publishFrame() -> void {
 #if defined(PLATFORM_WINDOWS)
   if(!_running.load(std::memory_order_relaxed)) return;
-  if(!_snapshotRequested.exchange(false, std::memory_order_acq_rel)) return;
+  if(!_snapshotRequested.exchange(false, std::memory_order_acquire)) return;
   static uint publishTraceCount = 0;
   bool tracePublish = publishTraceCount++ < 40;
   if(tracePublish) fastLinkDebug("RAMTrace::publishFrame requested loaded=%d", emulator && emulator->loaded());
@@ -176,7 +182,7 @@ auto FastLinkRAMTraceService::publish(const uint8_t* data, uint32_t size) -> voi
 
   _publishedSize.store(WRAMSize, std::memory_order_release);
   _activeSlot.store(targetSlot, std::memory_order_release);
-  _sequence.fetch_add(1, std::memory_order_acq_rel);
+  _sequence.fetch_add(1, std::memory_order_release);
   _condition.notify_all();
 #endif
 }
@@ -205,7 +211,10 @@ auto FastLinkRAMTraceService::copyActiveSnapshot(uint8_t* output, uint32_t capac
 auto FastLinkRAMTraceService::threadMain() -> void {
 #if defined(PLATFORM_WINDOWS)
   fastLinkDebug("RAMTrace::thread begin");
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+  // The process runs in HIGH_PRIORITY_CLASS.  BELOW_NORMAL would still give
+  // this ancillary HTTP worker a base priority above ordinary applications;
+  // IDLE guarantees that emulation, PPU, audio, and driver work wins.
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
   SetThreadPriorityBoost(GetCurrentThread(), FALSE);
 
   WSADATA wsaData = {};

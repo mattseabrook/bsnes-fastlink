@@ -29,6 +29,9 @@ inline auto fastLinkDebug(const char* format, ...) -> void {
 
 #else
 
+inline auto fastLinkCrashStep(const char*) -> void {
+}
+
 inline auto fastLinkDebug(const char*, ...) -> void {
 }
 

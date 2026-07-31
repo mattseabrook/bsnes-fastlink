@@ -642,15 +642,6 @@ struct NativeVideoImplementation {
       (unsigned long)capabilities.maxImageCount
     );
 
-    uint32_t requestedImages = owner.swapchainImages();
-    if(requestedImages < 2) requestedImages = 2;
-    if(requestedImages > _maxImages) requestedImages = _maxImages;
-    uint32_t minImages = capabilities.minImageCount;
-    if(minImages < requestedImages) minImages = requestedImages;
-    if(capabilities.maxImageCount && minImages > capabilities.maxImageCount) {
-      minImages = capabilities.maxImageCount;
-    }
-
     uint32_t presentModeCount = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(_physicalDevice, _surface, &presentModeCount, nullptr);
     VkPresentModeKHR presentModes[16] = {};
@@ -659,6 +650,20 @@ struct NativeVideoImplementation {
 
     VkPresentModeKHR presentMode = choosePresentMode(presentModes, presentModeCount, owner.presentMode());
     fastLinkDebug("NativeVulkan::createSwapchain presentModes=%lu chosen=%d", (unsigned long)presentModeCount, presentMode);
+
+    uint32_t requestedImages = owner.swapchainImages();
+    if(requestedImages < 2) requestedImages = 2;
+    // A two-image Mailbox swapchain can have one image in scanout and the
+    // other queued, leaving no target for the next frame. Requesting three
+    // preserves Mailbox's replace-the-pending-frame behavior without pacing
+    // SNES execution to image availability.
+    if(presentMode == VK_PRESENT_MODE_MAILBOX_KHR && requestedImages < 3) requestedImages = 3;
+    if(requestedImages > _maxImages) requestedImages = _maxImages;
+    uint32_t minImages = capabilities.minImageCount;
+    if(minImages < requestedImages) minImages = requestedImages;
+    if(capabilities.maxImageCount && minImages > capabilities.maxImageCount) {
+      minImages = capabilities.maxImageCount;
+    }
 
     auto oldSwapchain = _swapchain;
     releaseFullScreenExclusive();

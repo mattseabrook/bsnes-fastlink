@@ -71,7 +71,14 @@ WRAM snapshot suitable for local tools such as
 
 The service uses a separate low-priority thread, short socket timeouts,
 `TCP_NODELAY`, and triple-buffered snapshots so local HTTP reads do not stall the
-emulation frame path.
+emulation frame path. Snapshot requests are coalesced and synchronized to
+emulation-frame publication, preventing an unpaced client from repeatedly
+transmitting stale 128 KiB snapshots. With the server enabled but no request
+pending, the emulation-frame path performs only two atomic checks; with the
+server disabled, it performs one. The only requested-frame work on the
+emulation thread is a bounded 128 KiB copy into a preallocated snapshot slot;
+socket I/O and the second copy into the response buffer run on an idle-priority
+worker.
 
 Windows Defaults
 ----------------
@@ -81,7 +88,8 @@ runtime path:
 
   - Video driver: `Win32 Vulkan`
   - Video present mode: `Mailbox` by default when available
-  - Video swapchain images: clamped to 2-4
+  - Video swapchain images: configurable from 2-4; Mailbox automatically
+    requests at least three images so one render target remains free
   - Audio driver: WASAPI when available
   - Audio exclusive mode: disabled for WASAPI shared-device compatibility
   - Audio blocking: disabled
