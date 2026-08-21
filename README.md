@@ -12,6 +12,16 @@ This fork is based on bsnes, originally developed by Near.
 Latest FastLink Changes
 -----------------------
 
+The `experimental-core` branch now defaults to an accuracy-first core profile.
+`FastLink/AccuracyFirst: true` selects the cycle-rendered PPU and accurate DSP,
+disables behavioral hotfixes, fast math, delayed coprocessor synchronization,
+HLE preference, PPU limit bypasses, and CPU/coprocessor overclocking. Run-ahead
+remains available because its speculative frames are discarded and the
+committed machine state is restored. Set the option to `false` to restore the
+Windows fast-PPU/HD Mode 7 profile. See the
+[core accuracy audit](docs/core-accuracy-audit.md) for the source comparison,
+OpenSFC hardware-boundary review, known gaps, changes, and validation results.
+
 The latest play-testing changes from `Play-testing v1` center the Windows build
 around the low-latency path:
 
@@ -94,7 +104,7 @@ runtime path:
   - Audio exclusive mode: disabled for WASAPI shared-device compatibility
   - Audio blocking: disabled
   - Native file dialogs: enabled
-  - PPU fast path: enabled
+  - Cycle-rendered PPU: enabled by the accuracy-first profile
   - Software filters: disabled by default on the fast path
 
 Unique Features

@@ -137,6 +137,7 @@ auto Settings::process(bool load) -> void {
 
   bind(boolean, "FastLink/RAMTraceServer", fastLink.ramTraceServer);
   bind(natural, "FastLink/RunAhead", fastLink.runAhead);
+  bind(boolean, "FastLink/AccuracyFirst", fastLink.accuracyFirst);
   bind(boolean, "FastLink/DisableSoftwareFilters", fastLink.disableSoftwareFilters);
   bind(boolean, "FastLink/LowLatencyInactiveYield", fastLink.lowLatencyInactiveYield);
   bind(boolean, "FastLink/SoftwareFramePacing", fastLink.softwareFramePacing);
@@ -210,12 +211,14 @@ auto Settings::process(bool load) -> void {
     if(fastLink.inputPollMicroseconds > 5000) fastLink.inputPollMicroseconds = 5000;
     #endif
     if(fastLink.disableSoftwareFilters) video.filter = "None";
-    emulator.hack.ppu.fast = true;
-    if(emulator.hack.ppu.mode7.scale < 2) emulator.hack.ppu.mode7.scale = 4;
-    if(emulator.hack.ppu.mode7.scale > 8) emulator.hack.ppu.mode7.scale = 8;
-    emulator.hack.ppu.mode7.perspective = true;
-    emulator.hack.ppu.mode7.supersample = false;
-    emulator.hack.ppu.mode7.mosaic = true;
+    if(!fastLink.accuracyFirst) {
+      emulator.hack.ppu.fast = true;
+      if(emulator.hack.ppu.mode7.scale < 2) emulator.hack.ppu.mode7.scale = 4;
+      if(emulator.hack.ppu.mode7.scale > 8) emulator.hack.ppu.mode7.scale = 8;
+      emulator.hack.ppu.mode7.perspective = true;
+      emulator.hack.ppu.mode7.supersample = false;
+      emulator.hack.ppu.mode7.mosaic = true;
+    }
     if(audio.driver == "WASAPI") {
       audio.exclusive = false;
       audio.blocking = false;
@@ -254,6 +257,27 @@ auto Settings::process(bool load) -> void {
     if(!input.driver || input.driver == "None") input.driver = NativeInputDriverName;
     general.nativeFileDialogs = true;
     #endif
+
+    // Accuracy-first is the experimental-core baseline.  These switches all
+    // alter emulated behavior relative to a stock console; run-ahead remains
+    // enabled because discarded speculative frames do not change committed
+    // core state.
+    if(fastLink.accuracyFirst) {
+      emulator.hack.hotfixes = false;
+      emulator.hack.cpu.overclock = 100;
+      emulator.hack.cpu.fastMath = false;
+      emulator.hack.ppu.fast = false;
+      emulator.hack.ppu.noSpriteLimit = false;
+      emulator.hack.ppu.noVRAMBlocking = false;
+      emulator.hack.ppu.mode7.scale = 1;
+      emulator.hack.dsp.fast = false;
+      emulator.hack.dsp.cubic = false;
+      emulator.hack.dsp.echoShadow = false;
+      emulator.hack.coprocessor.delayedSync = false;
+      emulator.hack.coprocessor.preferHLE = false;
+      emulator.hack.sa1.overclock = 100;
+      emulator.hack.superfx.overclock = 100;
+    }
   }
 
   #undef bind

@@ -130,14 +130,14 @@ static void flush_variables()
 			emulator->configure("Hacks/CPU/FastMath", false);
 	}
 
-	variable = { "bsnes_cpu_sa1_overclock", nullptr };
+	variable = { "bsnes_sa1_overclock", nullptr };
 	if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) && variable.value)
 	{
 		int val = atoi(variable.value);
 		emulator->configure("Hacks/SA1/Overclock", val);
 	}
 
-	variable = { "bsnes_cpu_sfx_overclock", nullptr };
+	variable = { "bsnes_sfx_overclock", nullptr };
 	if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) && variable.value)
 	{
 		int val = atoi(variable.value);
@@ -480,7 +480,7 @@ static void set_environment_info(retro_environment_t cb)
 		{ "bsnes_cpu_fastmath", "CPU Fast Math; OFF|ON" },
 		{ "bsnes_sa1_overclock", "SA1 Coprocessor Overclocking; 100|110|120|130|140|150|160|170|180|190|200|210|220|230|240|250|260|270|280|290|300|310|320|330|340|350|360|370|380|390|400|10|20|30|40|50|60|70|80|90" },
 		{ "bsnes_sfx_overclock", "SuperFX Coprocessor Overclocking; 100|110|120|130|140|150|160|170|180|190|200|210|220|230|240|250|260|270|280|290|300|310|320|330|340|350|360|370|380|390|400|410|420|430|440|450|460|470|480|490|500|510|520|530|540|550|560|570|580|590|600|610|620|630|640|650|660|670|680|690|700|710|720|730|740|750|760|770|780|790|800|10|20|30|40|50|60|70|80|90" },
-		{ "bsnes_ppu_fast", "PPU Fast mode; ON|OFF" },
+		{ "bsnes_ppu_fast", "PPU Fast mode; OFF|ON" },
 		{ "bsnes_ppu_deinterlace", "PPU Deinterlace; ON|OFF" },
 		{ "bsnes_ppu_no_sprite_limit", "PPU No sprite limit; OFF|ON" },
 		{ "bsnes_ppu_no_vram_blocking", "PPU No VRAM blocking; OFF|ON" },
@@ -489,10 +489,10 @@ static void set_environment_info(retro_environment_t cb)
 		{ "bsnes_mode7_perspective", "HD Mode 7 Perspective correction; ON|OFF" },
 		{ "bsnes_mode7_supersample", "HD Mode 7 Supersampling; OFF|ON" },
 		{ "bsnes_mode7_mosaic", "HD Mode 7 HD->SD Mosaic; ON|OFF" },
-		{ "bsnes_dsp_fast", "DSP Fast mode; ON|OFF" },
+		{ "bsnes_dsp_fast", "DSP Fast mode; OFF|ON" },
 		{ "bsnes_dsp_cubic", "DSP Cubic interpolation; OFF|ON" },
 		{ "bsnes_dsp_echo_shadow", "DSP Echo shadow RAM; OFF|ON" },
-		{ "bsnes_coprocessor_delayed_sync", "Coprocessor Delayed Sync; ON|OFF" },
+		{ "bsnes_coprocessor_delayed_sync", "Coprocessor Delayed Sync; OFF|ON" },
 		{ "bsnes_coprocessor_prefer_hle", "Coprocessor Prefer HLE; ON|OFF" },
 		{ "bsnes_sgb_bios", "Preferred Super GameBoy BIOS (restart); SGB1.sfc|SGB2.sfc" },
 		{ "bsnes_video_filter", "Video Filter; None|NTSC (RF)|NTSC (Composite)|NTSC (S-Video)|NTSC (RGB)" },

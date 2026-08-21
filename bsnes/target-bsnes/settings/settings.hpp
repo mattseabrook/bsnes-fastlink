@@ -85,6 +85,7 @@ struct Settings : Markup::Node {
   struct FastLink {
     bool ramTraceServer = false;
     uint runAhead = 1;
+    bool accuracyFirst = true;
     bool disableSoftwareFilters = true;
     bool lowLatencyInactiveYield = true;
     bool softwareFramePacing = true;
@@ -108,14 +109,14 @@ struct Settings : Markup::Node {
       string method = "Fast";
     } serialization;
     struct Hack {
-      bool hotfixes = true;
+      bool hotfixes = false;
       string entropy = "Low";
       struct CPU {
         uint overclock = 100;
         bool fastMath = false;
       } cpu;
       struct PPU {
-        bool fast = true;
+        bool fast = false;
         bool deinterlace = true;
       bool noSpriteLimit = false;
       bool noVRAMBlocking = false;
@@ -127,12 +128,12 @@ struct Settings : Markup::Node {
         } mode7;
       } ppu;
       struct DSP {
-        bool fast = true;
+        bool fast = false;
         bool cubic = false;
         bool echoShadow = false;
       } dsp;
       struct Coprocessor {
-        bool delayedSync = true;
+        bool delayedSync = false;
         bool preferHLE = false;
       } coprocessor;
       struct SA1 {
