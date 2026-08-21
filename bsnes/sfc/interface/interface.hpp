@@ -69,8 +69,6 @@ struct Interface : Emulator::Interface {
   auto configure(string configuration) -> bool override;
   auto configure(string name, string value) -> bool override;
 
-  auto frameSkip() -> uint override;
-  auto setFrameSkip(uint frameSkip) -> void override;
 };
 
 #include "configuration.hpp"

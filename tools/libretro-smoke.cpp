@@ -6,7 +6,6 @@
 #include <dlfcn.h>
 #include <fstream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "../bsnes/target-libretro/libretro.h"
@@ -18,23 +17,6 @@ std::vector<uint8_t> frame;
 unsigned frameWidth = 0;
 unsigned frameHeight = 0;
 size_t framePitch = 0;
-
-const std::unordered_map<std::string, std::string> options = {
-  {"bsnes_hotfixes", "OFF"},
-  {"bsnes_entropy", "Low"},
-  {"bsnes_cpu_overclock", "100"},
-  {"bsnes_cpu_fastmath", "OFF"},
-  {"bsnes_sa1_overclock", "100"},
-  {"bsnes_sfx_overclock", "100"},
-  {"bsnes_ppu_fast", "OFF"},
-  {"bsnes_ppu_no_sprite_limit", "OFF"},
-  {"bsnes_ppu_no_vram_blocking", "OFF"},
-  {"bsnes_dsp_fast", "OFF"},
-  {"bsnes_dsp_cubic", "OFF"},
-  {"bsnes_dsp_echo_shadow", "OFF"},
-  {"bsnes_coprocessor_delayed_sync", "OFF"},
-  {"bsnes_coprocessor_prefer_hle", "OFF"},
-};
 
 void logMessage(enum retro_log_level, const char* format, ...) {
   va_list arguments;
@@ -59,9 +41,8 @@ bool environment(unsigned command, void* data) {
         || pixelFormat == RETRO_PIXEL_FORMAT_RGB565;
   case RETRO_ENVIRONMENT_GET_VARIABLE: {
     auto& variable = *(retro_variable*)data;
-    auto option = options.find(variable.key ? variable.key : "");
-    variable.value = option == options.end() ? nullptr : option->second.c_str();
-    return variable.value;
+    variable.value = nullptr;
+    return false;
   }
   case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
     *(bool*)data = false;

@@ -15,63 +15,12 @@ auto System::run() -> void {
 }
 
 auto System::runToSave() -> void {
-  // Enable coprocessor delayed sync if it is off - this is extremely important
-  // for coprocessor games, as many will not sync correctly for states when the
-  // option is off.
-  bool delay_sync_prev = configuration.hacks.coprocessor.delayedSync;
-  configuration.hacks.coprocessor.delayedSync = true;
-
-  auto method = configuration.system.serialization.method;
-
-  //these games will periodically deadlock when using "Fast" synchronization
-  if(cartridge.headerTitle() == "Star Ocean") method = "Strict";
-  if(cartridge.headerTitle() == "TALES OF PHANTASIA") method = "Strict";
-
-  //fast serialization corrupts the Super Game Boy implementation
-  if(cartridge.has.ICD) method = "Strict";
-
-  //fallback in case of unrecognized method specified
-  if(method != "Fast" && method != "Strict") method = "Fast";
-
   scheduler.mode = Scheduler::Mode::Synchronize;
-  if(method == "Fast") runToSaveFast();
-  if(method == "Strict") runToSaveStrict();
+  runToSaveStrict();
 
   scheduler.mode = Scheduler::Mode::Run;
   scheduler.active = cpu.thread;
 
-  // Restore coprocessor delayed sync to whatever it was previous to the state save operation
-  configuration.hacks.coprocessor.delayedSync = delay_sync_prev;
-}
-
-auto System::runToSaveFast() -> void {
-  //run the emulator normally until the CPU thread naturally hits a synchronization point
-  while(true) {
-    scheduler.enter();
-    if(scheduler.event == Scheduler::Event::Frame) frameEvent();
-    if(scheduler.event == Scheduler::Event::Synchronized) {
-      if(scheduler.active != cpu.thread) continue;
-      break;
-    }
-    if(scheduler.event == Scheduler::Event::Desynchronized) continue;
-  }
-
-  //ignore any desynchronization events to force all other threads to their synchronization points
-  auto synchronize = [&](cothread_t thread) -> void {
-    scheduler.active = thread;
-    while(true) {
-      scheduler.enter();
-      if(scheduler.event == Scheduler::Event::Frame) frameEvent();
-      if(scheduler.event == Scheduler::Event::Synchronized) break;
-      if(scheduler.event == Scheduler::Event::Desynchronized) continue;
-    }
-  };
-
-  synchronize(smp.thread);
-  synchronize(ppu.thread);
-  for(auto coprocessor : cpu.coprocessors) {
-    synchronize(coprocessor->thread);
-  }
 }
 
 auto System::runToSaveStrict() -> void {
@@ -138,13 +87,6 @@ auto System::load(Emulator::Interface* interface) -> bool {
     information.cpuFrequency = Emulator::Constants::Colorburst::PAL * 4.8;
   }
 
-  if(configuration.hacks.hotfixes) {
-    //due to poor programming, Rendering Ranger R2 will rarely lock up at 32040 * 768hz.
-    if(cartridge.headerTitle() == "RENDERING RANGER R2") {
-      information.apuFrequency = 32000.0 * 768.0;
-    }
-  }
-
   if(cartridge.has.ICD) {
     if(!icd.load()) return false;
   }
@@ -169,7 +111,6 @@ auto System::unload() -> void {
 
   if(cartridge.has.ICD) icd.unload();
   if(cartridge.has.MCC) mcc.unload();
-  if(cartridge.has.Event) event.unload();
   if(cartridge.has.SA1) sa1.unload();
   if(cartridge.has.SuperFX) superfx.unload();
   if(cartridge.has.HitachiDSP) hitachidsp.unload();
@@ -186,14 +127,9 @@ auto System::unload() -> void {
 }
 
 auto System::power(bool reset) -> void {
-  hacks.fastPPU = configuration.hacks.ppu.fast;
-
   Emulator::audio.reset(interface);
 
-  random.entropy(Random::Entropy::Low);  //fallback case
-  if(configuration.hacks.entropy == "None") random.entropy(Random::Entropy::None);
-  if(configuration.hacks.entropy == "Low" ) random.entropy(Random::Entropy::Low );
-  if(configuration.hacks.entropy == "High") random.entropy(Random::Entropy::High);
+  random.entropy(Random::Entropy::Low);
 
   cpu.power(reset);
   smp.power(reset);
@@ -203,7 +139,6 @@ auto System::power(bool reset) -> void {
   if(cartridge.has.ICD) icd.power();
   if(cartridge.has.MCC) mcc.power();
   if(cartridge.has.DIP) dip.power();
-  if(cartridge.has.Event) event.power();
   if(cartridge.has.SA1) sa1.power();
   if(cartridge.has.SuperFX) superfx.power();
   if(cartridge.has.ARMDSP) armdsp.power();
@@ -215,17 +150,11 @@ auto System::power(bool reset) -> void {
   if(cartridge.has.SDD1) sdd1.power();
   if(cartridge.has.OBC1) obc1.power();
   if(cartridge.has.MSU1) msu1.power();
-  if(cartridge.has.Cx4) cx4.power();
-  if(cartridge.has.DSP1) dsp1.power();
-  if(cartridge.has.DSP2) dsp2.power();
-  if(cartridge.has.DSP4) dsp4.power();
-  if(cartridge.has.ST0010) st0010.power();
   if(cartridge.has.BSMemorySlot) bsmemory.power();
   if(cartridge.has.SufamiTurboSlotA) sufamiturboA.power();
   if(cartridge.has.SufamiTurboSlotB) sufamiturboB.power();
 
   if(cartridge.has.ICD) cpu.coprocessors.append(&icd);
-  if(cartridge.has.Event) cpu.coprocessors.append(&event);
   if(cartridge.has.SA1) cpu.coprocessors.append(&sa1);
   if(cartridge.has.SuperFX) cpu.coprocessors.append(&superfx);
   if(cartridge.has.ARMDSP) cpu.coprocessors.append(&armdsp);

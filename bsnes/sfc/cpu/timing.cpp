@@ -24,17 +24,6 @@ auto CPU::step() -> void {
     coprocessor->clock -= Clocks * (uint64)coprocessor->frequency;
   }
 
-  if(overclocking.target) {
-    overclocking.counter += Clocks;
-    if(overclocking.counter < overclocking.target) {
-      if constexpr(Synchronize) {
-        if(configuration.hacks.coprocessor.delayedSync) return;
-        synchronizeCoprocessors();
-      }
-      return;
-    }
-  }
-
   if constexpr(Clocks >=  2) stepOnce();
   if constexpr(Clocks >=  4) stepOnce();
   if constexpr(Clocks >=  6) stepOnce();
@@ -77,7 +66,6 @@ auto CPU::step() -> void {
   }
 
   if constexpr(Synchronize) {
-    if(configuration.hacks.coprocessor.delayedSync) return;
     synchronizeCoprocessors();
   }
 }
@@ -118,23 +106,11 @@ auto CPU::scanline() -> void {
     status.hdmaTriggered = false;
   }
 
-  //overclocking
-  if(vcounter() == (Region::NTSC() ? 261 : 311)) {
-    overclocking.counter = 0;
-    overclocking.target = 0;
-    double overclock = configuration.hacks.cpu.overclock / 100.0;
-    if(overclock > 1.0) {
-      int clocks = (Region::NTSC() ? 262 : 312) * 1364;
-      overclocking.target = clocks * overclock - clocks;
-    }
-  }
-
   //handle video frame events from the CPU core to prevent a race condition between
   //games polling inputs during NMI and the PPU thread not being 100% synchronized.
   if(vcounter() == ppu.vdisp()) {
     if(auto device = controllerPort2.device) device->latch();  //light guns
     synchronizePPU();
-    if(system.fastPPU()) PPUfast::Line::flush();
     scheduler.leave(Scheduler::Event::Frame);
   }
 }

@@ -266,7 +266,6 @@ compile_objects() {
   echo "$B/sfc/smp/smp.cpp|$objdir/sfc-smp.o|cpp|" >> "$manifest"
   echo "$B/sfc/dsp/dsp.cpp|$objdir/sfc-dsp.o|cpp|" >> "$manifest"
   echo "$B/sfc/ppu/ppu.cpp|$objdir/sfc-ppu.o|cpp|" >> "$manifest"
-  echo "$B/sfc/ppu-fast/ppu.cpp|$objdir/sfc-ppu-fast.o|cpp|" >> "$manifest"
   echo "$B/sfc/expansion/expansion.cpp|$objdir/sfc-expansion.o|cpp|" >> "$manifest"
   echo "$B/sfc/coprocessor/coprocessor.cpp|$objdir/sfc-coprocessor.o|cpp|" >> "$manifest"
   echo "$B/sfc/slot/slot.cpp|$objdir/sfc-slot.o|cpp|" >> "$manifest"

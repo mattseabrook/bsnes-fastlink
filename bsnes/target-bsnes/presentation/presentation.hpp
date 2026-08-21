@@ -92,8 +92,6 @@ struct Presentation : Window {
       MenuItem hotkeySettings{&settingsMenu};
       MenuItem pathSettings{&settingsMenu};
       MenuItem emulatorSettings{&settingsMenu};
-      MenuItem enhancementSettings{&settingsMenu};
-      MenuItem compatibilitySettings{&settingsMenu};
       MenuItem driverSettings{&settingsMenu};
     Menu toolsMenu{&menuBar};
       Menu saveState{&toolsMenu};

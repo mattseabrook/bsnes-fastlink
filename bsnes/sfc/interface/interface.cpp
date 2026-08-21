@@ -324,13 +324,4 @@ auto Interface::configure(string name, string value) -> bool {
   return SuperFamicom::configuration.write(name, value);
 }
 
-auto Interface::frameSkip() -> uint {
-  return system.frameSkip;
-}
-
-auto Interface::setFrameSkip(uint frameSkip) -> void {
-  system.frameSkip = frameSkip;
-  system.frameCounter = frameSkip;
-}
-
 }

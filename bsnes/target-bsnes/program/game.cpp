@@ -47,36 +47,7 @@ auto Program::load() -> void {
   clearGameSlots();
   screenshot = {};
 
-  emulator->configure("System/Serialization/Method", settings.emulator.serialization.method);
-  emulator->configure("Hacks/Hotfixes", settings.emulator.hack.hotfixes);
-  emulator->configure("Hacks/Entropy", settings.emulator.hack.entropy);
-  emulator->configure("Hacks/CPU/Overclock", settings.emulator.hack.cpu.overclock);
-  emulator->configure("Hacks/CPU/FastMath", settings.emulator.hack.cpu.fastMath);
-  emulator->configure("Hacks/PPU/Fast", settings.emulator.hack.ppu.fast);
-  emulator->configure("Hacks/PPU/Deinterlace", settings.emulator.hack.ppu.deinterlace);
-  emulator->configure("Hacks/PPU/NoSpriteLimit", settings.emulator.hack.ppu.noSpriteLimit);
-  emulator->configure("Hacks/PPU/NoVRAMBlocking", settings.emulator.hack.ppu.noVRAMBlocking);
-  emulator->configure("Hacks/PPU/Mode7/Scale", settings.emulator.hack.ppu.mode7.scale);
-  emulator->configure("Hacks/PPU/Mode7/Perspective", settings.emulator.hack.ppu.mode7.perspective);
-  emulator->configure("Hacks/PPU/Mode7/Supersample", settings.emulator.hack.ppu.mode7.supersample);
-  emulator->configure("Hacks/PPU/Mode7/Mosaic", settings.emulator.hack.ppu.mode7.mosaic);
-  emulator->configure("Hacks/DSP/Fast", settings.emulator.hack.dsp.fast);
-  emulator->configure("Hacks/DSP/Cubic", settings.emulator.hack.dsp.cubic);
-  emulator->configure("Hacks/DSP/EchoShadow", settings.emulator.hack.dsp.echoShadow);
-  emulator->configure("Hacks/Coprocessor/DelayedSync", settings.emulator.hack.coprocessor.delayedSync);
-  emulator->configure("Hacks/Coprocessor/PreferHLE", settings.emulator.hack.coprocessor.preferHLE);
-  emulator->configure("Hacks/SuperFX/Overclock", settings.emulator.hack.superfx.overclock);
-  fastLinkDebug(
-    "Program::load configured core serialization=%s coSerializable=%d runAhead=%u mode7Scale=%u perspective=%d supersample=%d mosaic=%d ppuFast=%d",
-    (const char*)settings.emulator.serialization.method,
-    co_serializable(),
-    settings.fastLink.runAhead,
-    settings.emulator.hack.ppu.mode7.scale,
-    settings.emulator.hack.ppu.mode7.perspective,
-    settings.emulator.hack.ppu.mode7.supersample,
-    settings.emulator.hack.ppu.mode7.mosaic,
-    settings.emulator.hack.ppu.fast
-  );
+  fastLinkDebug("Program::load configured accuracy-only core");
   fastLinkDebug("Program::load emulator->load begin");
     fastLinkCrashStep("Program::load: emulator load begin");
   if(!emulator->load()) {
@@ -115,14 +86,9 @@ auto Program::load() -> void {
     }
     fastLinkDebug("Program::load unverified warning accepted");
   }
-  fastLinkDebug("Program::load hackCompatibility begin");
-  fastLinkCrashStep("Program::load: hackCompatibility");
-  hackCompatibility();
   fastLinkDebug("Program::load emulator->power begin");
   emulator->power();
   fastLinkDebug("Program::load emulator->power done");
-  resetRunAheadWarmup();
-  fastLinkDebug("Program::load run-ahead warmup reset frames=%u", runAheadWarmupFrames);
   if(emulatorSettings.autoLoadStateOnLoad.checked()) {
     fastLinkDebug("Program::load auto load state begin");
     program.loadState("Quick/Undo");
@@ -248,7 +214,6 @@ auto Program::loadSuperFamicom(string location) -> bool {
   }
   fastLinkDebug("Program::loadSuperFamicom database verified=%d", superFamicom.verified);
   superFamicom.manifest = manifest ? manifest : heuristics.manifest();
-  hackPatchMemory(rom);
   superFamicom.document = BML::unserialize(superFamicom.manifest);
   superFamicom.location = location;
   fastLinkDebug("Program::loadSuperFamicom manifest parsed bytes=%u", (uint)superFamicom.manifest.size());
@@ -443,13 +408,11 @@ auto Program::reset() -> void {
     return;
   }
   fastLinkDebug("Program::reset begin");
-  hackCompatibility();
   fastLinkDebug("Program::reset emulator->reset begin");
   emulator->reset();
   fastLinkDebug("Program::reset emulator->reset done");
-  resetRunAheadWarmup();
   showMessage("Game reset");
-  fastLinkDebug("Program::reset complete warmup=%u", runAheadWarmupFrames);
+  fastLinkDebug("Program::reset complete");
 }
 
 auto Program::power() -> void {
@@ -458,13 +421,11 @@ auto Program::power() -> void {
     return;
   }
   fastLinkDebug("Program::power begin");
-  hackCompatibility();
   fastLinkDebug("Program::power emulator->power begin");
   emulator->power();
   fastLinkDebug("Program::power emulator->power done");
-  resetRunAheadWarmup();
   showMessage("Power cycle");
-  fastLinkDebug("Program::power complete warmup=%u", runAheadWarmupFrames);
+  fastLinkDebug("Program::power complete");
 }
 
 auto Program::unload() -> void {
@@ -492,7 +453,6 @@ auto Program::unload() -> void {
     fastLinkDebug("Program::unload auto save undo state done");
   }
   screenshot = {};
-  runAheadWarmupFrames = 0;
   fastLinkDebug("Program::unload emulator->unload begin");
   emulator->unload();
   fastLinkDebug("Program::unload emulator->unload done");

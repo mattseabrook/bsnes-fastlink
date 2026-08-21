@@ -6,11 +6,8 @@ struct System {
   inline auto cpuFrequency() const -> double { return information.cpuFrequency; }
   inline auto apuFrequency() const -> double { return information.apuFrequency; }
 
-  inline auto fastPPU() const -> bool { return hacks.fastPPU; }
-
   auto run() -> void;
   auto runToSave() -> void;
-  auto runToSaveFast() -> void;
   auto runToSaveStrict() -> void;
   auto frameEvent() -> void;
 
@@ -23,9 +20,6 @@ struct System {
   auto serialize(bool synchronize) -> serializer;
   auto unserialize(serializer&) -> bool;
 
-  uint frameSkip = 0;
-  uint frameCounter = 0;
-
 private:
   Emulator::Interface* interface = nullptr;
 
@@ -36,10 +30,6 @@ private:
     double apuFrequency = 32040.0 * 768.0;
     uint serializeSize[2] = {0, 0};
   } information;
-
-  struct Hacks {
-    bool fastPPU = false;
-  } hacks;
 
   auto serializeAll(serializer&, bool synchronize) -> void;
   auto serializeInit(bool synchronize) -> uint;

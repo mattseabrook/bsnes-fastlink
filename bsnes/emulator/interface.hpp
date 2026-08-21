@@ -99,8 +99,6 @@ struct Interface {
   virtual auto get(const string& name) -> any { return {}; }
   virtual auto set(const string& name, const any& value) -> bool { return false; }
 
-  virtual auto frameSkip() -> uint { return 0; }
-  virtual auto setFrameSkip(uint frameSkip) -> void {}
 };
 
 }

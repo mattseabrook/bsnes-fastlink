@@ -26,7 +26,6 @@ struct Audio {
   auto setBalance(double balance) -> void;
 
   auto createStream(uint channels, double frequency) -> shared_pointer<Stream>;
-  auto serialize(serializer&) -> void;
 
 private:
   auto process() -> void;
@@ -73,7 +72,6 @@ struct Stream {
     write(samples);
   }
 
-  auto serialize(serializer&) -> void;
 
 private:
   struct Channel {

@@ -25,7 +25,6 @@ SRCFILES := $(SRCDIR)/bsnes/target-libretro/libretro.cpp \
 				$(SRCDIR)/bsnes/sfc/smp/smp.cpp \
 				$(SRCDIR)/bsnes/sfc/dsp/dsp.cpp \
 				$(SRCDIR)/bsnes/sfc/ppu/ppu.cpp \
-				$(SRCDIR)/bsnes/sfc/ppu-fast/ppu.cpp \
 				$(SRCDIR)/bsnes/sfc/expansion/expansion.cpp \
 				$(SRCDIR)/bsnes/sfc/coprocessor/coprocessor.cpp \
 				$(SRCDIR)/bsnes/sfc/slot/slot.cpp \

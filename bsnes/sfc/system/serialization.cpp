@@ -17,7 +17,6 @@ auto System::serialize(bool synchronize) -> serializer {
   s.array(version);
   s.array(description);
   s.boolean(synchronize);
-  s.boolean(hacks.fastPPU);
   serializeAll(s, synchronize);
   return s;
 }
@@ -28,20 +27,16 @@ auto System::unserialize(serializer& s) -> bool {
   char version[16] = {};
   char description[512] = {};
   bool synchronize = false;
-  bool fastPPU = false;
 
   s.integer(signature);
   s.integer(serializeSize);
   s.array(version);
   s.array(description);
   s.boolean(synchronize);
-  s.boolean(fastPPU);
 
   if(signature != 0x31545342) return false;
   if(serializeSize != information.serializeSize[synchronize]) return false;
   if(string{version} != Emulator::SerializerVersion) return false;
-  if(fastPPU != hacks.fastPPU) return false;
-
   if(synchronize) power(/* reset = */ false);
   serializeAll(s, synchronize);
   return true;
@@ -60,7 +55,6 @@ auto System::serializeAll(serializer& s, bool synchronize) -> void {
   if(cartridge.has.ICD) icd.serialize(s);
   if(cartridge.has.MCC) mcc.serialize(s);
   if(cartridge.has.DIP) dip.serialize(s);
-  if(cartridge.has.Event) event.serialize(s);
   if(cartridge.has.SA1) sa1.serialize(s);
   if(cartridge.has.SuperFX) superfx.serialize(s);
   if(cartridge.has.ARMDSP) armdsp.serialize(s);
@@ -72,12 +66,6 @@ auto System::serializeAll(serializer& s, bool synchronize) -> void {
   if(cartridge.has.SDD1) sdd1.serialize(s);
   if(cartridge.has.OBC1) obc1.serialize(s);
   if(cartridge.has.MSU1) msu1.serialize(s);
-
-  if(cartridge.has.Cx4) cx4.serialize(s);
-  if(cartridge.has.DSP1) dsp1.serialize(s);
-  if(cartridge.has.DSP2) dsp2.serialize(s);
-  if(cartridge.has.DSP4) dsp4.serialize(s);
-  if(cartridge.has.ST0010) st0010.serialize(s);
 
   if(cartridge.has.BSMemorySlot) bsmemory.serialize(s);
   if(cartridge.has.SufamiTurboSlotA) sufamiturboA.serialize(s);
@@ -113,7 +101,6 @@ auto System::serializeInit(bool synchronize) -> uint {
   s.array(version);
   s.array(description);
   s.boolean(synchronize);
-  s.boolean(hacks.fastPPU);
   serializeAll(s, synchronize);
   return s.size();
 }

@@ -27,7 +27,6 @@ struct Cartridge {
     boolean ICD;
     boolean MCC;
     boolean DIP;
-    boolean Event;
     boolean SA1;
     boolean SuperFX;
     boolean ARMDSP;
@@ -39,12 +38,6 @@ struct Cartridge {
     boolean SDD1;
     boolean OBC1;
     boolean MSU1;
-
-    boolean Cx4;
-    boolean DSP1;
-    boolean DSP2;
-    boolean DSP4;
-    boolean ST0010;
 
     boolean GameBoySlot;
     boolean BSMemorySlot;
@@ -84,7 +77,6 @@ private:
   auto loadSufamiTurboA(Markup::Node) -> void;
   auto loadSufamiTurboB(Markup::Node) -> void;
   auto loadDIP(Markup::Node) -> void;
-  auto loadEvent(Markup::Node) -> void;
   auto loadSA1(Markup::Node) -> void;
   auto loadSuperFX(Markup::Node) -> void;
   auto loadARMDSP(Markup::Node) -> void;

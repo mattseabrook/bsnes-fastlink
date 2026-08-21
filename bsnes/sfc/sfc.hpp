@@ -137,7 +137,6 @@ namespace SuperFamicom {
   #include <sfc/smp/smp.hpp>
   #include <sfc/dsp/dsp.hpp>
   #include <sfc/ppu/ppu.hpp>
-  #include <sfc/ppu-fast/ppu.hpp>
 
   #include <sfc/controller/controller.hpp>
   #include <sfc/expansion/expansion.hpp>

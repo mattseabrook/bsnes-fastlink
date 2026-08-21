@@ -17,12 +17,8 @@ struct DSP {
   int64 clock = 0;
 
 private:
-  bool fastDSP = false;
   SPC_DSP spc_dsp;
   int16 samplebuffer[8192];
-
-//unserialized:
-  uint8 echoram[64 * 1024] = {};
 };
 
 extern DSP dsp;

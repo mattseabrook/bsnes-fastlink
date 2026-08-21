@@ -8,17 +8,18 @@ Starting revision: `e009fa4a35c9e09730602c85674d7b28f85cd941`
 
 ## Decision
 
-Keep the current bsnes core and run it in its accuracy configuration. A complete
-core replacement is not justified by the available evidence.
+Keep the current bsnes core and collapse it to a single accuracy-only execution
+path. A complete core replacement is not justified by the available evidence.
 
-The 5A22/65C816 implementation in this repository is byte-for-byte identical to
-the current upstream bsnes implementation at
+Before removing the inaccurate alternatives, the 5A22/65C816 implementation in
+this repository was byte-for-byte identical to current upstream bsnes at
 `7d5aa1e656b9171524d01b1b22917197d8121cb4`. It also already contains the two
 recent hardware-test-driven WDC65816 corrections from ares: emulation-mode PLB
 stack wrapping (`e589f8d9c`) and the emulation-mode `(direct,X)` wraparound bug
 (`be8fa76e7`). The fork's material accuracy regression was configuration: on
 Windows it forcibly selected fast PPU/DSP behavior and delayed coprocessor
-synchronization even when the accurate engines were present.
+synchronization even when the accurate engines were present. Those alternatives
+and their configuration state have now been removed rather than disabled.
 
 There is no public, comprehensive result set establishing a different actively
 maintained core as more accurate than bsnes's accurate profile across the CPU,
@@ -97,22 +98,23 @@ board-routing defect.
 
 ## 5A22 and WDC65816 line audit
 
-Every executable and state-definition line in `bsnes/sfc/cpu` and
-`bsnes/processor/wdc65816` was inspected—3,959 lines including the non-emulation
-disassembler. The audit compared instruction behavior to the W65C816S data
+Every executable and state-definition line in the original `bsnes/sfc/cpu` and
+`bsnes/processor/wdc65816` implementation was inspected—3,959 lines including
+the non-emulation disassembler. Removing inaccurate branches reduced the active
+implementation to 3,907 lines. The audit compared instruction behavior to the W65C816S data
 sheet, console additions to the SNES references, external interfaces to
 OpenSFC, and source behavior to current bsnes/ares. The table is a coverage
 ledger, not a claim that public documents reveal the chip's internal gates.
 
 | File | Lines | Result |
 | --- | ---: | --- |
-| `sfc/cpu/cpu.cpp` | 123 | Power/reset, region/version, thread entry, and interrupt vector path are coherent; entropy is deliberately configurable and accuracy mode disables behavioral hotfixes |
-| `sfc/cpu/cpu.hpp` | 248 | 24-bit bus, I/O, ALU, interrupt, DMA, autojoy, and per-channel state cover the externally visible 5A22 facilities |
+| `sfc/cpu/cpu.cpp` | 114 | Power/reset, region/version, thread entry, and interrupt vector path are coherent; behavioral power-on hotfixes are absent |
+| `sfc/cpu/cpu.hpp` | 243 | 24-bit bus, I/O, ALU, interrupt, DMA, autojoy, and per-channel state cover the externally visible 5A22 facilities; overclock state is absent |
 | `sfc/cpu/memory.cpp` | 86 | Variable 6/8/12-master-clock bus accesses, MDR/open-bus propagation, DMA edges, and refresh stalls are represented |
-| `sfc/cpu/timing.cpp` | 255 | Two-clock scheduler, IRQ/NMI polling, HDMA trigger, ALU iteration, and current autojoy sequence are present; refresh phasing is approximate |
+| `sfc/cpu/timing.cpp` | 231 | Two-clock scheduler, unconditional coprocessor synchronization, IRQ/NMI polling, HDMA trigger, ALU iteration, and current autojoy sequence are present; refresh phasing is approximate |
 | `sfc/cpu/irq.cpp` | 94 | NMI/IRQ line, hold, transition, enable, and `$4210/$4211` clearing behavior are modeled |
 | `sfc/cpu/dma.cpp` | 189 | All eight channels, transfer modes, A/B direction, fixed/reverse addressing, HDMA direct/indirect, and interleaving are modeled; two HDMA edge cases remain explicitly unverified |
-| `sfc/cpu/io.cpp` | 307 | `$2180`, `$4016/17`, `$4200..421f`, `$4300..437f`, multiply/divide, IRQ timers, MEMSEL, DMA, and open-bus masking are covered; concurrent autojoy accesses and IRQ-timer writes have unknowns |
+| `sfc/cpu/io.cpp` | 293 | `$2180`, `$4016/17`, `$4200..421f`, `$4300..437f`, timed multiply/divide, IRQ timers, MEMSEL, DMA, and open-bus masking are covered; concurrent autojoy accesses and IRQ-timer writes have unknowns |
 | `sfc/cpu/serialization.cpp` | 107 | All timing, I/O, ALU, DMA, and autojoy state needed for deterministic restoration is serialized |
 | `wdc65816/algorithms.cpp` | 363 | Arithmetic, BCD, shifts, compares, loads, stores, and flag calculations match the ISA-level reference and are width-specialized |
 | `wdc65816/instruction.cpp` | 64 | Opcode dispatch selects emulation/native and M/X width tables correctly |
@@ -129,9 +131,11 @@ ledger, not a claim that public documents reveal the chip's internal gates.
 | `wdc65816/wdc65816.hpp` | 289 | Interface and mode-specialized operation set inspected |
 | `wdc65816/disassembler.cpp` | 474 | Debug-only decode/format logic; no emulated behavior |
 
-Current upstream bsnes has no differences in these two directories. The ares
-differences are primarily its newer integer, thread, node, and debugger
-framework rather than a different 5A22 execution model.
+The retained WDC65816 directory has no differences from current upstream bsnes.
+The SFC CPU directory differs only by removal of overclock, immediate math,
+hotfix, and delayed-synchronization branches; the selected hardware behavior is
+unchanged. The ares differences are primarily its newer integer, thread, node,
+and debugger framework rather than a different 5A22 execution model.
 
 ## Confirmed strengths and known gaps
 
@@ -143,10 +147,9 @@ Confirmed in the selected implementation:
 - eight-channel DMA/HDMA, variable-speed CPU bus, WRAM port, multiply/divide
   latency, NMI/IRQ registers, controller I/O, and current ares autojoy polling
   behavior (`d45be3297`);
-- cycle-rendered PPU and accurate DSP paths are available and are now the
-  branch defaults;
+- cycle-rendered PPU and accurate DSP are the only compiled implementations;
 - the latest upstream high-resolution offset-per-tile PPU correction
-  (`7d5aa1e6`) is applied to both PPU implementations.
+  (`7d5aa1e6`) is applied to the retained cycle renderer.
 
 Open issues that should not be hidden behind an “accurate” label:
 
@@ -174,34 +177,40 @@ and published [DMA tests](https://snescentral.com/article.php?id=1123).
 
 ## Changes made on `experimental-core`
 
-1. Added `FastLink/AccuracyFirst`, defaulting to `true`.
-2. In that profile, disabled hotfixes, CPU/SA-1/SuperFX overclocking, fast math,
-   fast PPU, PPU limit bypasses, HD Mode 7 scaling, fast/cubic/echo-shadow DSP,
-   delayed coprocessor synchronization, and HLE preference.
-3. Kept run-ahead available. Its speculative execution restores the committed
-   serialized state; it is a latency technique rather than a persistent core
-   behavior shortcut.
-4. Changed libretro defaults for fast PPU, fast DSP, and delayed coprocessor
-   synchronization to `OFF`.
-5. Fixed the libretro SA-1 and SuperFX option lookups, which previously queried
-   keys different from the keys advertised to the frontend.
-6. Applied upstream's high-resolution offset-per-tile PPU fix to accurate and
-   fast renderers.
-7. Added `tools/libretro-smoke.cpp`, a small host that fixes accuracy options,
-   executes a ROM headlessly, and writes the final video frame for inspection.
+1. Removed the fast/HD PPU implementation and its build units. The cycle
+   renderer and hardware sprite/VRAM limits are unconditional.
+2. Removed fast/cubic/echo-shadow DSP branches; DSP advances one cycle at a
+   time, uses shared APU echo RAM, and uses the SNES Gaussian interpolator.
+3. Removed CPU, SA-1, and SuperFX overclock configuration and execution code.
+   Clock creation is fixed to the modeled hardware frequencies.
+4. Removed immediate multiply/divide, behavioral game hotfixes, per-game ROM
+   mutation, and frontend compatibility overrides.
+5. Removed delayed coprocessor synchronization. CPU steps always synchronize,
+   and SA-1 bus-conflict behavior cannot be bypassed.
+6. Removed run-ahead and its speculative frame, audio-resampler snapshot,
+   warmup, frame-suppression, and configuration machinery. It reduced latency,
+   not hardware accuracy, and was not required for correctness.
+7. Removed optional Cx4, DSP1/2/4, ST0010, and competition-cart HLE engines.
+   Required low-level firmware must now be supplied instead of silently
+   changing implementation.
+8. Removed the Enhancements and Compatibility settings panels, related
+   hotkeys, core configuration keys, and libretro options. Old keys that remain
+   in an existing frontend settings file are inert.
+9. Applied upstream's high-resolution offset-per-tile PPU fix to the retained
+   cycle renderer.
+10. Added `tools/libretro-smoke.cpp`, a small host that executes a ROM
+    headlessly and writes the final video frame for inspection.
 
-`AccuracyFirst: false` retains the prior FastLink fast-PPU/HD Mode 7 profile for
-controlled comparison. Existing configuration files are normalized to the
-accurate values when the new profile is enabled, rather than silently retaining
-old fast-core toggles.
+These are source removals, not defaults. There is no switch that can restore an
+inaccurate path at runtime.
 
 ## Verification
 
 Builds:
 
-- Windows application: `BUILD_DIR=build_experimental MNT_COPY_DIR='' JOBS="$(nproc)" ./build.sh build` — passed. The existing build helper also copied the resulting executable to its configured `/mnt/PhantomIDE/bsnes.exe` destination.
+- Windows application: `BUILD_DIR=build_accuracy_only MNT_COPY_DIR='' JOBS="$(nproc)" ./build.sh build` — passed. The existing build helper also copied the resulting executable to its configured `/mnt/PhantomIDE/bsnes.exe` destination.
 - Linux libretro shared core: `make -C bsnes -f GNUmakefile clean` followed by `make -C bsnes -f GNUmakefile target=libretro binary=library local=false -j"$(nproc)"` — passed.
-- Smoke host: `g++ -std=c++17 -O2 -Wall -Wextra tools/libretro-smoke.cpp -ldl -o /tmp/libretro-smoke` — passed without diagnostics.
+- Smoke host: `g++ -std=c++17 -O2 -Wall -Wextra tools/libretro-smoke.cpp -ldl -o /tmp/libretro-smoke` — passed without diagnostics. It does not set accuracy options because those options no longer exist.
 
 Functional ROM results using gilyon/snes-tests release 1.4:
 

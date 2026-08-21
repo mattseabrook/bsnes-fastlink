@@ -71,11 +71,6 @@ struct CPU : Processor::WDC65816, Thread, PPUcounter {
   uint8 wram[128 * 1024];
   vector<Thread*> coprocessors;
 
-  struct Overclocking {
-    uint counter = 0;
-    uint target = 0;
-  } overclocking;
-
 private:
   uint version = 2;  //allowed: 1, 2
 

@@ -56,7 +56,6 @@ auto Cartridge::loadCartridge(Markup::Node node) -> void {
   if(auto node = board["slot(type=SufamiTurbo)[0]"]) loadSufamiTurboA(node);
   if(auto node = board["slot(type=SufamiTurbo)[1]"]) loadSufamiTurboB(node);
   if(auto node = board["dip"]) loadDIP(node);
-  if(auto node = board["processor(architecture=uPD78214)"]) loadEvent(node);
   if(auto node = board["processor(architecture=W65C816S)"]) loadSA1(node);
   if(auto node = board["processor(architecture=GSU)"]) loadSuperFX(node);
   if(auto node = board["processor(architecture=ARM6)"]) loadARMDSP(node);
@@ -264,36 +263,6 @@ auto Cartridge::loadDIP(Markup::Node node) -> void {
   }
 }
 
-//processor(architecture=uPD78214)
-auto Cartridge::loadEvent(Markup::Node node) -> void {
-  has.Event = true;
-  event.board = Event::Board::Unknown;
-  if(node["identifier"].text() == "Campus Challenge '92") event.board = Event::Board::CampusChallenge92;
-  if(node["identifier"].text() == "PowerFest '94") event.board = Event::Board::PowerFest94;
-
-  for(auto map : node.find("map")) {
-    loadMap(map, {&Event::read, &event}, {&Event::write, &event});
-  }
-
-  if(auto mcu = node["mcu"]) {
-    for(auto map : mcu.find("map")) {
-      loadMap(map, {&Event::mcuRead, &event}, {&Event::mcuWrite, &event});
-    }
-    if(auto memory = mcu["memory(type=ROM,content=Program)"]) {
-      loadMemory(event.rom[0], memory, File::Required);
-    }
-    if(auto memory = mcu["memory(type=ROM,content=Level-1)"]) {
-      loadMemory(event.rom[1], memory, File::Required);
-    }
-    if(auto memory = mcu["memory(type=ROM,content=Level-2)"]) {
-      loadMemory(event.rom[2], memory, File::Required);
-    }
-    if(auto memory = mcu["memory(type=ROM,content=Level-3)"]) {
-      loadMemory(event.rom[3], memory, File::Required);
-    }
-  }
-}
-
 //processor(architecture=W65C816S)
 auto Cartridge::loadSA1(Markup::Node node) -> void {
   has.SA1 = true;
@@ -428,19 +397,6 @@ auto Cartridge::loadHitachiDSP(Markup::Node node, uint roms) -> void {
     }
   }
 
-  if(configuration.hacks.coprocessor.preferHLE) {
-    has.Cx4 = true;
-    for(auto map : node.find("map")) {
-      loadMap(map, {&Cx4::read, &cx4}, {&Cx4::write, &cx4});
-    }
-    if(auto memory = node["memory(type=RAM,content=Data,architecture=HG51BS169)"]) {
-      for(auto map : memory.find("map")) {
-        loadMap(map, {&Cx4::read, &cx4}, {&Cx4::write, &cx4});
-      }
-    }
-    return;
-  }
-
   if(auto memory = node["memory(type=ROM,content=Data,architecture=HG51BS169)"]) {
     if(auto file = game.memory(memory)) {
       if(auto fp = platform->open(ID::SuperFamicom, file->name(), File::Read)) {
@@ -503,31 +459,6 @@ auto Cartridge::loaduPD7725(Markup::Node node) -> void {
     }
   }
 
-  if(failed || configuration.hacks.coprocessor.preferHLE) {
-    auto manifest = BML::serialize(game.document);
-    if(manifest.find("identifier: DSP1")) {  //also matches DSP1B
-      has.DSP1 = true;
-      for(auto map : node.find("map")) {
-        loadMap(map, {&DSP1::read, &dsp1}, {&DSP1::write, &dsp1});
-      }
-      return;
-    }
-    if(manifest.find("identifier: DSP2")) {
-      has.DSP2 = true;
-      for(auto map : node.find("map")) {
-        loadMap(map, {&DSP2::read, &dsp2}, {&DSP2::write, &dsp2});
-      }
-      return;
-    }
-    if(manifest.find("identifier: DSP4")) {
-      has.DSP4 = true;
-      for(auto map : node.find("map")) {
-        loadMap(map, {&DSP4::read, &dsp4}, {&DSP4::write, &dsp4});
-      }
-      return;
-    }
-  }
-
   if(failed) {
     //throw an error to the user
     platform->open(ID::SuperFamicom, "DSP3", File::Read, File::Required);
@@ -580,19 +511,6 @@ auto Cartridge::loaduPD96050(Markup::Node node) -> void {
       if(auto fp = platform->open(ID::SuperFamicom, file->name(), File::Read)) {
         for(auto n : range(2048)) necdsp.dataROM[n] = fp->readl(2);
       } else failed = true;
-    }
-  }
-
-  if(failed || configuration.hacks.coprocessor.preferHLE) {
-    auto manifest = BML::serialize(game.document);
-    if(manifest.find("identifier: ST010")) {
-      has.ST0010 = true;
-      if(auto memory = node["memory(type=RAM,content=Data,architecture=uPD96050)"]) {
-        for(auto map : memory.find("map")) {
-          loadMap(map, {&ST0010::read, &st0010}, {&ST0010::write, &st0010});
-        }
-      }
-      return;
     }
   }
 

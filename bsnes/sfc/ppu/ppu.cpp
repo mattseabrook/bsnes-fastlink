@@ -70,16 +70,10 @@ auto PPU::load() -> bool {
   ppu2.version = max(1, min(3, configuration.system.ppu2.version));
   vram.mask = configuration.system.ppu1.vram.size / sizeof(uint16) - 1;
   if(vram.mask != 0xffff) vram.mask = 0x7fff;
-  return true && ppufast.load();
+  return true;
 }
 
 auto PPU::power(bool reset) -> void {
-  if(system.fastPPU()) {
-    create(PPUfast::Enter, system.cpuFrequency());
-    ppufast.power(reset);
-    return;
-  }
-
   create(Enter, system.cpuFrequency());
   PPUcounter::reset();
   memory::fill<uint16>(output, 512 * 480);
@@ -187,10 +181,6 @@ auto PPU::power(bool reset) -> void {
 }
 
 auto PPU::refresh() -> void {
-  if(system.fastPPU()) {
-    return ppufast.refresh();
-  }
-
   auto output = this->output;
   auto pitch  = 512;
   auto width  = 512;

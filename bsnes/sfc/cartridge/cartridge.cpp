@@ -44,7 +44,6 @@ auto Cartridge::title() const -> string {
   if(slotSufamiTurboA.label && slotSufamiTurboB.label) return {slotSufamiTurboA.label, " + ", slotSufamiTurboB.label};
   if(slotSufamiTurboA.label) return slotSufamiTurboA.label;
   if(slotSufamiTurboB.label) return slotSufamiTurboB.label;
-  if(has.Cx4 || has.DSP1 || has.DSP2 || has.DSP4 || has.ST0010) return {"[HLE] ", game.label};
   return game.label;
 }
 

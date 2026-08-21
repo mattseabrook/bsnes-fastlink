@@ -35,26 +35,6 @@ auto EmulatorSettings::create() -> void {
 
   fastForwardLabel.setText("Fast Forward").setFont(Font().setBold());
 
-  frameSkipLabel.setText("Frame skip:").setToolTip({
-    "Set how many frames to skip while fast forwarding.\n"
-    "Frame skipping allows a higher maximum fast forwarding frame rate."
-  });
-
-  frameSkipAmount.append(ComboButtonItem().setText("None"));
-  frameSkipAmount.append(ComboButtonItem().setText("1 frame"));
-  frameSkipAmount.append(ComboButtonItem().setText("2 frames"));
-  frameSkipAmount.append(ComboButtonItem().setText("3 frames"));
-  frameSkipAmount.append(ComboButtonItem().setText("4 frames"));
-  frameSkipAmount.append(ComboButtonItem().setText("5 frames"));
-  frameSkipAmount.append(ComboButtonItem().setText("6 frames"));
-  frameSkipAmount.append(ComboButtonItem().setText("7 frames"));
-  frameSkipAmount.append(ComboButtonItem().setText("8 frames"));
-  frameSkipAmount.append(ComboButtonItem().setText("9 frames"));
-  frameSkipAmount.item(settings.fastForward.frameSkip).setSelected();
-  frameSkipAmount.onChange([&] {
-    settings.fastForward.frameSkip = frameSkipAmount.selected().offset();
-  });
-
   limiterLabel.setText("Limiter:").setToolTip({
     "Set the maximum speed when fast forwarding."
   });

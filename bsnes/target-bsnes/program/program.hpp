@@ -4,9 +4,6 @@ struct Program : Lock, Emulator::Platform {
   //program.cpp
   auto create() -> void;
   auto main() -> void;
-  auto runEmulationFrame(bool videoEnabled = true, bool audioEnabled = true, bool accountFrame = true) -> void;
-  auto runAheadFrames() const -> uint;
-  auto resetRunAheadWarmup() -> void;
   auto paceFrame() -> void;
   auto resetFramePacer() -> void;
   auto quit() -> void;
@@ -115,8 +112,6 @@ struct Program : Lock, Emulator::Platform {
   auto applyPatchBPS(vector<uint8_t>& data, string location) -> bool;
 
   //hacks.cpp
-  auto hackCompatibility() -> void;
-  auto hackPatchMemory(vector<uint8_t>& data) -> void;
 
   //filter.cpp
   auto filterSelect(uint& width, uint& height, uint scale) -> Filter::Render;
@@ -173,13 +168,9 @@ public:
 
   bool frameAdvanceLock = false;
   bool loading = false;
-  bool suppressVideoFrame = false;
-  bool suppressAudioFrame = false;
-  bool suppressFrameAccounting = false;
 
   uint64 autoSaveTime;
   uint64 framePaceDeadline = 0;
-  uint runAheadWarmupFrames = 0;
 
   uint64 statusTime;
   string statusMessage;

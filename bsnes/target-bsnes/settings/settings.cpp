@@ -5,8 +5,6 @@
 #include "hotkeys.cpp"
 #include "paths.cpp"
 #include "emulator.cpp"
-#include "enhancements.cpp"
-#include "compatibility.cpp"
 #include "drivers.cpp"
 Settings settings;
 VideoSettings videoSettings;
@@ -15,8 +13,6 @@ InputSettings inputSettings;
 HotkeySettings hotkeySettings;
 PathSettings pathSettings;
 EmulatorSettings emulatorSettings;
-EnhancementSettings enhancementSettings;
-CompatibilitySettings compatibilitySettings;
 DriverSettings driverSettings;
 namespace Instances { Instance<SettingsWindow> settingsWindow; }
 SettingsWindow& settingsWindow = Instances::settingsWindow();
@@ -26,17 +22,13 @@ namespace {
   constexpr auto HotkeySettingsIndex = 2;
   constexpr auto PathSettingsIndex = 3;
   constexpr auto EmulatorSettingsIndex = 4;
-  constexpr auto EnhancementSettingsIndex = 5;
-  constexpr auto CompatibilitySettingsIndex = 6;
-  constexpr auto DriverSettingsIndex = 7;
+  constexpr auto DriverSettingsIndex = 5;
   #else
   constexpr auto InputSettingsIndex = 2;
   constexpr auto HotkeySettingsIndex = 3;
   constexpr auto PathSettingsIndex = 4;
   constexpr auto EmulatorSettingsIndex = 5;
-  constexpr auto EnhancementSettingsIndex = 6;
-  constexpr auto CompatibilitySettingsIndex = 7;
-  constexpr auto DriverSettingsIndex = 8;
+  constexpr auto DriverSettingsIndex = 6;
   #endif
 }
 
@@ -131,13 +123,10 @@ auto Settings::process(bool load) -> void {
   bind(text,    "Path/Recent/SufamiTurboA", path.recent.sufamiTurboA);
   bind(text,    "Path/Recent/SufamiTurboB", path.recent.sufamiTurboB);
 
-  bind(natural, "FastForward/FrameSkip", fastForward.frameSkip);
   bind(natural, "FastForward/Limiter",   fastForward.limiter);
   bind(boolean, "FastForward/Mute",      fastForward.mute);
 
   bind(boolean, "FastLink/RAMTraceServer", fastLink.ramTraceServer);
-  bind(natural, "FastLink/RunAhead", fastLink.runAhead);
-  bind(boolean, "FastLink/AccuracyFirst", fastLink.accuracyFirst);
   bind(boolean, "FastLink/DisableSoftwareFilters", fastLink.disableSoftwareFilters);
   bind(boolean, "FastLink/LowLatencyInactiveYield", fastLink.lowLatencyInactiveYield);
   bind(boolean, "FastLink/SoftwareFramePacing", fastLink.softwareFramePacing);
@@ -155,26 +144,6 @@ auto Settings::process(bool load) -> void {
   bind(natural, "Emulator/AutoSaveMemory/Interval",      emulator.autoSaveMemory.interval);
   bind(boolean, "Emulator/AutoSaveStateOnUnload",        emulator.autoSaveStateOnUnload);
   bind(boolean, "Emulator/AutoLoadStateOnLoad",          emulator.autoLoadStateOnLoad);
-  bind(text,    "Emulator/Serialization/Method",         emulator.serialization.method);
-  bind(boolean, "Emulator/Hack/Hotfixes",                emulator.hack.hotfixes);
-  bind(text,    "Emulator/Hack/Entropy",                 emulator.hack.entropy);
-  bind(natural, "Emulator/Hack/CPU/Overclock",           emulator.hack.cpu.overclock);
-  bind(boolean, "Emulator/Hack/CPU/FastMath",            emulator.hack.cpu.fastMath);
-  bind(boolean, "Emulator/Hack/PPU/Fast",                emulator.hack.ppu.fast);
-  bind(boolean, "Emulator/Hack/PPU/Deinterlace",         emulator.hack.ppu.deinterlace);
-  bind(boolean, "Emulator/Hack/PPU/NoSpriteLimit",       emulator.hack.ppu.noSpriteLimit);
-  bind(boolean, "Emulator/Hack/PPU/NoVRAMBlocking",      emulator.hack.ppu.noVRAMBlocking);
-  bind(natural, "Emulator/Hack/PPU/Mode7/Scale",         emulator.hack.ppu.mode7.scale);
-  bind(boolean, "Emulator/Hack/PPU/Mode7/Perspective",   emulator.hack.ppu.mode7.perspective);
-  bind(boolean, "Emulator/Hack/PPU/Mode7/Supersample",   emulator.hack.ppu.mode7.supersample);
-  bind(boolean, "Emulator/Hack/PPU/Mode7/Mosaic",        emulator.hack.ppu.mode7.mosaic);
-  bind(boolean, "Emulator/Hack/DSP/Fast",                emulator.hack.dsp.fast);
-  bind(boolean, "Emulator/Hack/DSP/Cubic",               emulator.hack.dsp.cubic);
-  bind(boolean, "Emulator/Hack/DSP/EchoShadow",          emulator.hack.dsp.echoShadow);
-  bind(boolean, "Emulator/Hack/Coprocessor/DelayedSync", emulator.hack.coprocessor.delayedSync);
-  bind(boolean, "Emulator/Hack/Coprocessor/PreferHLE",   emulator.hack.coprocessor.preferHLE);
-  bind(natural, "Emulator/Hack/SA1/Overclock",           emulator.hack.sa1.overclock);
-  bind(natural, "Emulator/Hack/SuperFX/Overclock",       emulator.hack.superfx.overclock);
   bind(boolean, "Emulator/Cheats/Enable",                emulator.cheats.enable);
 
   bind(boolean, "General/StatusBar",         general.statusBar);
@@ -199,10 +168,6 @@ auto Settings::process(bool load) -> void {
     }
     if(video.swapchainImages < 2) video.swapchainImages = 2;
     if(video.swapchainImages > 4) video.swapchainImages = 4;
-    // Run-ahead is mandatory on the Windows low-latency build. Normalize old
-    // configurations that explicitly disabled it back to one frame.
-    if(fastLink.runAhead < 1) fastLink.runAhead = 1;
-    if(fastLink.runAhead > 4) fastLink.runAhead = 4;
     if(fastLink.genericHIDMapping != "SNES Adapter" && fastLink.genericHIDMapping != "Standard HID") {
       fastLink.genericHIDMapping = "SNES Adapter";
     }
@@ -211,14 +176,6 @@ auto Settings::process(bool load) -> void {
     if(fastLink.inputPollMicroseconds > 5000) fastLink.inputPollMicroseconds = 5000;
     #endif
     if(fastLink.disableSoftwareFilters) video.filter = "None";
-    if(!fastLink.accuracyFirst) {
-      emulator.hack.ppu.fast = true;
-      if(emulator.hack.ppu.mode7.scale < 2) emulator.hack.ppu.mode7.scale = 4;
-      if(emulator.hack.ppu.mode7.scale > 8) emulator.hack.ppu.mode7.scale = 8;
-      emulator.hack.ppu.mode7.perspective = true;
-      emulator.hack.ppu.mode7.supersample = false;
-      emulator.hack.ppu.mode7.mosaic = true;
-    }
     if(audio.driver == "WASAPI") {
       audio.exclusive = false;
       audio.blocking = false;
@@ -257,27 +214,6 @@ auto Settings::process(bool load) -> void {
     if(!input.driver || input.driver == "None") input.driver = NativeInputDriverName;
     general.nativeFileDialogs = true;
     #endif
-
-    // Accuracy-first is the experimental-core baseline.  These switches all
-    // alter emulated behavior relative to a stock console; run-ahead remains
-    // enabled because discarded speculative frames do not change committed
-    // core state.
-    if(fastLink.accuracyFirst) {
-      emulator.hack.hotfixes = false;
-      emulator.hack.cpu.overclock = 100;
-      emulator.hack.cpu.fastMath = false;
-      emulator.hack.ppu.fast = false;
-      emulator.hack.ppu.noSpriteLimit = false;
-      emulator.hack.ppu.noVRAMBlocking = false;
-      emulator.hack.ppu.mode7.scale = 1;
-      emulator.hack.dsp.fast = false;
-      emulator.hack.dsp.cubic = false;
-      emulator.hack.dsp.echoShadow = false;
-      emulator.hack.coprocessor.delayedSync = false;
-      emulator.hack.coprocessor.preferHLE = false;
-      emulator.hack.sa1.overclock = 100;
-      emulator.hack.superfx.overclock = 100;
-    }
   }
 
   #undef bind
@@ -318,8 +254,6 @@ auto SettingsWindow::create() -> void {
   panelList.append(ListViewItem().setText("Hotkeys").setIcon(Icon::Device::Keyboard));
   panelList.append(ListViewItem().setText("Paths").setIcon(Icon::Emblem::Folder));
   panelList.append(ListViewItem().setText("Emulator").setIcon(Icon::Action::Settings));
-  panelList.append(ListViewItem().setText("Enhancements").setIcon(Icon::Action::Add));
-  panelList.append(ListViewItem().setText("Compatibility").setIcon(Icon::Action::Remove));
   panelList.append(ListViewItem().setText("Drivers").setIcon(Icon::Place::Settings));
   panelList.onChange([&] {
     if(auto item = panelList.selected()) {
@@ -337,8 +271,6 @@ auto SettingsWindow::create() -> void {
   panelContainer.append(hotkeySettings, Size{~0, ~0});
   panelContainer.append(pathSettings, Size{~0, ~0});
   panelContainer.append(emulatorSettings, Size{~0, ~0});
-  panelContainer.append(enhancementSettings, Size{~0, ~0});
-  panelContainer.append(compatibilitySettings, Size{~0, ~0});
   panelContainer.append(driverSettings, Size{~0, ~0});
   statusBar.setFont(Font().setBold());
 
@@ -381,8 +313,6 @@ auto SettingsWindow::show(int index) -> void {
   hotkeySettings.setVisible(false);
   pathSettings.setVisible(false);
   emulatorSettings.setVisible(false);
-  enhancementSettings.setVisible(false);
-  compatibilitySettings.setVisible(false);
   driverSettings.setVisible(false);
   panelList.item(index).setSelected();
   if(index ==-1) settingsHome.setVisible(true);
@@ -394,8 +324,6 @@ auto SettingsWindow::show(int index) -> void {
   if(index == HotkeySettingsIndex) hotkeySettings.setVisible(true);
   if(index == PathSettingsIndex) pathSettings.setVisible(true);
   if(index == EmulatorSettingsIndex) emulatorSettings.setVisible(true);
-  if(index == EnhancementSettingsIndex) enhancementSettings.setVisible(true);
-  if(index == CompatibilitySettingsIndex) compatibilitySettings.setVisible(true);
   if(index == DriverSettingsIndex) driverSettings.setVisible(true);
   panelContainer.resize();
   setVisible();

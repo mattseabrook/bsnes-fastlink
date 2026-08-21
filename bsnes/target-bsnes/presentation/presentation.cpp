@@ -7,17 +7,13 @@ namespace {
   constexpr auto HotkeySettingsIndex = 2;
   constexpr auto PathSettingsIndex = 3;
   constexpr auto EmulatorSettingsIndex = 4;
-  constexpr auto EnhancementSettingsIndex = 5;
-  constexpr auto CompatibilitySettingsIndex = 6;
-  constexpr auto DriverSettingsIndex = 7;
+  constexpr auto DriverSettingsIndex = 5;
   #else
   constexpr auto InputSettingsIndex = 2;
   constexpr auto HotkeySettingsIndex = 3;
   constexpr auto PathSettingsIndex = 4;
   constexpr auto EmulatorSettingsIndex = 5;
-  constexpr auto EnhancementSettingsIndex = 6;
-  constexpr auto CompatibilitySettingsIndex = 7;
-  constexpr auto DriverSettingsIndex = 8;
+  constexpr auto DriverSettingsIndex = 6;
   #endif
 }
 
@@ -149,8 +145,6 @@ auto Presentation::create() -> void {
   hotkeySettings.setIcon(Icon::Device::Keyboard).setText("Hotkeys ...").onActivate([&] { settingsWindow.show(HotkeySettingsIndex); });
   pathSettings.setIcon(Icon::Emblem::Folder).setText("Paths ...").onActivate([&] { settingsWindow.show(PathSettingsIndex); });
   emulatorSettings.setIcon(Icon::Action::Settings).setText("Emulator ...").onActivate([&] { settingsWindow.show(EmulatorSettingsIndex); });
-  enhancementSettings.setIcon(Icon::Action::Add).setText("Enhancements ...").onActivate([&] { settingsWindow.show(EnhancementSettingsIndex); });
-  compatibilitySettings.setIcon(Icon::Action::Remove).setText("Compatibility ...").onActivate([&] { settingsWindow.show(CompatibilitySettingsIndex); });
   driverSettings.setIcon(Icon::Place::Settings).setText("Drivers ...").onActivate([&] { settingsWindow.show(DriverSettingsIndex); });
 
   toolsMenu.setText(tr("Tools")).setVisible(false);

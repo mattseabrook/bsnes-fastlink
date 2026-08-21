@@ -258,22 +258,16 @@ auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height
     fastLinkCrashStep("Program::videoFrame: begin");
   if(traceFrame) {
     fastLinkDebug(
-      "Program::videoFrame[%llu] begin data=%p pitch=%u width=%u height=%u scale=%u suppressVideo=%d suppressAccounting=%d",
+      "Program::videoFrame[%llu] begin data=%p pitch=%u width=%u height=%u scale=%u",
       (unsigned long long)videoFrameTraceCounter,
       (const void*)data,
       pitch,
       width,
       height,
-      scale,
-      suppressVideoFrame,
-      suppressFrameAccounting
+      scale
     );
   }
-  if(!suppressFrameAccounting) inputManager.frame();
-  if(suppressVideoFrame) {
-    if(traceFrame) fastLinkDebug("Program::videoFrame[%llu] suppressed", (unsigned long long)videoFrameTraceCounter);
-    return;
-  }
+  inputManager.frame();
 
   //this relies on the UI only running between Emulator::Scheduler::Event::Frame events
   //this will always be the case; so we can avoid an unnecessary copy or one-frame delay here
@@ -354,7 +348,7 @@ auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height
   current = chrono::timestamp();
   if(current != previous) {
     previous = current;
-    showFrameRate({frameCounter * (1 + emulator->frameSkip()), " FPS"});
+    showFrameRate({frameCounter, " FPS"});
     frameCounter = 0;
   }
 }
@@ -370,20 +364,14 @@ auto Program::audioFrame(const double* samples, uint channels) -> void {
   #endif
   if(traceFrame) {
     fastLinkDebug(
-      "Program::audioFrame[%llu] begin samples=%p channels=%u suppressAudio=%d mute=%u ready=%d",
+      "Program::audioFrame[%llu] begin samples=%p channels=%u mute=%u ready=%d",
       (unsigned long long)audioFrameTraceCounter,
       (const void*)samples,
       channels,
-      suppressAudioFrame,
       mute,
       audio.ready()
     );
   }
-  if(suppressAudioFrame) {
-    if(traceFrame) fastLinkDebug("Program::audioFrame[%llu] suppressed", (unsigned long long)audioFrameTraceCounter);
-    return;
-  }
-
   if(mute) {
     double silence[] = {0.0, 0.0};
     audio.output(silence);

@@ -62,7 +62,6 @@ auto InputManager::bindHotkeys() -> void {
   hotkeys.append(InputHotkey("Fast Forward").onPress([] {
     if(!emulator->loaded()) return;
     program.fastForwarding = true;
-    emulator->setFrameSkip(emulator->configuration("Hacks/PPU/Fast") == "true" ? settings.fastForward.frameSkip : 0);
     video.setBlocking(false);
     audio.setBlocking(settings.fastForward.limiter != 0);
     audio.setDynamic(false);
@@ -79,7 +78,6 @@ auto InputManager::bindHotkeys() -> void {
   }).onRelease([] {
     program.fastForwarding = false;
     if(!emulator->loaded()) return;
-    emulator->setFrameSkip(0);
     video.setBlocking(settings.video.blocking);
     audio.setBlocking(settings.audio.blocking);
     audio.setDynamic(settings.audio.dynamic);
@@ -106,24 +104,6 @@ auto InputManager::bindHotkeys() -> void {
     }
     //advance one frame, even if we were currently paused when starting frame advance mode
     program.frameAdvanceLock = false;
-  }));
-
-  hotkeys.append(InputHotkey("Decrease HD Mode 7").onPress([] {
-    int index = enhancementSettings.mode7Scale.selected().offset() - 1;
-    if(index < 0) return;
-    enhancementSettings.mode7Scale.item(index).setSelected();
-    enhancementSettings.mode7Scale.doChange();
-  }));
-
-  hotkeys.append(InputHotkey("Increase HD Mode 7").onPress([] {
-    int index = enhancementSettings.mode7Scale.selected().offset() + 1;
-    if(index >= enhancementSettings.mode7Scale.itemCount()) return;
-    enhancementSettings.mode7Scale.item(index).setSelected();
-    enhancementSettings.mode7Scale.doChange();
-  }));
-
-  hotkeys.append(InputHotkey("Toggle Supersampling").onPress([] {
-    enhancementSettings.mode7Supersample.setChecked(!enhancementSettings.mode7Supersample.checked()).doToggle();
   }));
 
   hotkeys.append(InputHotkey("Reset Emulation").onPress([] {

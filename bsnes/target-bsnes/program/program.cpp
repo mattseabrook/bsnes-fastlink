@@ -10,7 +10,6 @@
 #include "input.cpp"
 #include "utility.cpp"
 #include "patch.cpp"
-#include "hacks.cpp"
 #include "filter.cpp"
 #include "viewport.cpp"
 
@@ -181,14 +180,13 @@ auto Program::create() -> void {
   fastLinkCrashStep("Program::create: crash handlers installed");
   #endif
   fastLinkDebug(
-    "Program::create begin videoDriver=%s present=%s swap=%u audioDriver=%s audioExclusive=%d audioBlocking=%d runAhead=%u ramTrace=%d",
+    "Program::create begin videoDriver=%s present=%s swap=%u audioDriver=%s audioExclusive=%d audioBlocking=%d ramTrace=%d",
     (const char*)settings.video.driver,
     (const char*)settings.video.presentMode,
     settings.video.swapchainImages,
     (const char*)settings.audio.driver,
     settings.audio.exclusive,
     settings.audio.blocking,
-    settings.fastLink.runAhead,
     settings.fastLink.ramTraceServer
   );
   fastLinkDebug("Program::create libco co_serializable=%d", co_serializable());
@@ -218,8 +216,6 @@ auto Program::create() -> void {
   hotkeySettings.create();
   pathSettings.create();
   emulatorSettings.create();
-  enhancementSettings.create();
-  compatibilitySettings.create();
   driverSettings.create();
 
   toolsWindow.create();
@@ -338,12 +334,10 @@ auto Program::main() -> void {
   bool currentlyInactive = inactive();
   if(traceFrame) {
     fastLinkDebug(
-      "Program::main[%llu] loaded=%d inactive=%d warmup=%u runAheadSetting=%u frameAdvance=%d fastForward=%d",
+      "Program::main[%llu] loaded=%d inactive=%d frameAdvance=%d fastForward=%d",
       (unsigned long long)mainTraceCounter,
       emulator && emulator->loaded(),
       currentlyInactive,
-      runAheadWarmupFrames,
-      settings.fastLink.runAhead,
       presentation.frameAdvance.checked(),
       fastForwarding
     );
@@ -390,75 +384,9 @@ auto Program::main() -> void {
   }
   #endif
 
-  auto frames = runAheadFrames();
-  if(traceFrame) fastLinkDebug("Program::main[%llu] runAheadFrames=%u", (unsigned long long)mainTraceCounter, frames);
-  if(frames == 0) {
-    if(traceFrame) fastLinkDebug("Program::main[%llu] normal frame begin", (unsigned long long)mainTraceCounter);
-    runEmulationFrame(true, true, true);
-    if(traceFrame) fastLinkDebug("Program::main[%llu] normal frame done", (unsigned long long)mainTraceCounter);
-  } else {
-    auto serializeRunAhead = [&](const char* label) -> serializer {
-      if(traceFrame) {
-        fastLinkDebug(
-          "Program::main[%llu] serialize %s deterministic begin co_serializable=%d",
-          (unsigned long long)mainTraceCounter,
-          label,
-          co_serializable()
-        );
-      }
-      auto state = emulator->serialize(false);
-      if(traceFrame) fastLinkDebug("Program::main[%llu] serialize %s deterministic size=%u", (unsigned long long)mainTraceCounter, label, (uint)state.size());
-      return state;
-    };
-
-    if(traceFrame) fastLinkDebug("Program::main[%llu] real frame begin", (unsigned long long)mainTraceCounter);
-    runEmulationFrame(false, true, true);
-    if(traceFrame) fastLinkDebug("Program::main[%llu] serialize real begin", (unsigned long long)mainTraceCounter);
-    auto realFrame = serializeRunAhead("real");
-    if(traceFrame) fastLinkDebug("Program::main[%llu] serialize real size=%u", (unsigned long long)mainTraceCounter, (uint)realFrame.size());
-    if(!realFrame.size()) {
-      resetRunAheadWarmup();
-      if(traceFrame) fastLinkDebug("Program::main[%llu] real serialize empty; rendering recovery frame", (unsigned long long)mainTraceCounter);
-      runEmulationFrame(true, true, true);
-    } else {
-      // The core state does not own Emulator::Audio's stream resamplers. Save
-      // them separately so speculative frames cannot leave interpolation
-      // history one frame ahead of the restored DSP state (an audible click at
-      // every run-ahead boundary).
-      serializer audioStateSize;
-      Emulator::audio.serialize(audioStateSize);
-      serializer realAudio{audioStateSize.size()};
-      Emulator::audio.serialize(realAudio);
-
-      auto realTurboCounter = inputManager.turboCounter;
-      for(uint frame : range(frames)) {
-        if(traceFrame) fastLinkDebug(
-          "Program::main[%llu] run-ahead speculative frame %u/%u begin",
-          (unsigned long long)mainTraceCounter,
-          frame + 1,
-          frames
-        );
-        runEmulationFrame(frame + 1 == frames, false, false);
-        if(traceFrame) fastLinkDebug(
-          "Program::main[%llu] run-ahead speculative frame %u/%u done",
-          (unsigned long long)mainTraceCounter,
-          frame + 1,
-          frames
-        );
-      }
-      serializer restore{realFrame.data(), (uint)realFrame.size()};
-      if(traceFrame) fastLinkDebug("Program::main[%llu] restoring real frame", (unsigned long long)mainTraceCounter);
-      bool restored = emulator->unserialize(restore);
-      if(realAudio.size()) {
-        serializer audioRestore{realAudio.data(), realAudio.size()};
-        Emulator::audio.serialize(audioRestore);
-      }
-      inputManager.turboCounter = realTurboCounter;
-      if(!restored) resetRunAheadWarmup();
-      if(traceFrame) fastLinkDebug("Program::main[%llu] restored real frame=%d", (unsigned long long)mainTraceCounter, restored);
-    }
-  }
-  if(runAheadWarmupFrames) runAheadWarmupFrames--;
+  if(traceFrame) fastLinkDebug("Program::main[%llu] frame begin", (unsigned long long)mainTraceCounter);
+  emulator->run();
+  if(traceFrame) fastLinkDebug("Program::main[%llu] frame done", (unsigned long long)mainTraceCounter);
 
   fastLinkRAMTraceService.publishFrame();
   if(traceFrame) fastLinkDebug("Program::main[%llu] published RAM trace if requested", (unsigned long long)mainTraceCounter);
@@ -472,78 +400,6 @@ auto Program::main() -> void {
   }
 
   if(traceFrame) fastLinkDebug("Program::main[%llu] done", (unsigned long long)mainTraceCounter);
-}
-
-auto Program::runEmulationFrame(bool videoEnabled, bool audioEnabled, bool accountFrame) -> void {
-  #if defined(BUILD_DEBUG)
-  static uint64 runFrameTraceCounter = 0;
-  runFrameTraceCounter++;
-  bool traceFrame = runFrameTraceCounter <= 240;
-  #else
-  constexpr uint64 runFrameTraceCounter = 0;
-  constexpr bool traceFrame = false;
-  #endif
-  if(traceFrame) {
-    fastLinkDebug(
-      "Program::runEmulationFrame[%llu] begin video=%d audio=%d account=%d",
-      (unsigned long long)runFrameTraceCounter,
-      videoEnabled,
-      audioEnabled,
-      accountFrame
-    );
-  }
-  auto previousVideo = suppressVideoFrame;
-  auto previousAudio = suppressAudioFrame;
-  auto previousAccounting = suppressFrameAccounting;
-  suppressVideoFrame = !videoEnabled;
-  suppressAudioFrame = !audioEnabled;
-  suppressFrameAccounting = !accountFrame;
-
-  // Fast PPU rendering is by far the largest cost of discarded run-ahead
-  // frames (especially at HD Mode 7 scales).  Frame-skip suppresses that work
-  // inside the core, rather than waiting until platform->videoFrame() to throw
-  // the completed pixels away.  Run-ahead is disabled during fast-forward, so
-  // the normal value here is zero; preserve it for callers that use another
-  // frame-skip policy.
-  auto previousFrameSkip = emulator->frameSkip();
-  bool suppressCoreRendering = !videoEnabled && previousFrameSkip == 0;
-  if(suppressCoreRendering) emulator->setFrameSkip(1);
-  emulator->run();
-  if(suppressCoreRendering) emulator->setFrameSkip(previousFrameSkip);
-  suppressVideoFrame = previousVideo;
-  suppressAudioFrame = previousAudio;
-  suppressFrameAccounting = previousAccounting;
-  if(traceFrame) fastLinkDebug("Program::runEmulationFrame[%llu] done", (unsigned long long)runFrameTraceCounter);
-}
-
-auto Program::runAheadFrames() const -> uint {
-  if(!emulator || !emulator->loaded()) return 0;
-  auto requestedFrames = settings.fastLink.runAhead;
-  #if defined(PLATFORM_WINDOWS)
-  // Keep the Windows fast path enabled even if configuration is mutated after
-  // startup; Settings::process() also persists this normalization on load.
-  requestedFrames = max(1u, requestedFrames);
-  #endif
-  if(!requestedFrames) return 0;
-  if(!co_serializable()) {
-    static bool logged = false;
-    if(!logged) {
-      logged = true;
-      fastLinkDebug(
-        "Program::runAheadFrames disabled for this process: libco backend is not stack-serializable; requested=%u",
-        requestedFrames
-      );
-    }
-    return 0;
-  }
-  if(runAheadWarmupFrames) return 0;
-  if(frameAdvanceLock || presentation.frameAdvance.checked()) return 0;
-  if(fastForwarding) return 0;
-  return min(4u, requestedFrames);
-}
-
-auto Program::resetRunAheadWarmup() -> void {
-  runAheadWarmupFrames = 8;
 }
 
 auto Program::paceFrame() -> void {

@@ -3,10 +3,6 @@ auto PPU::serialize(serializer& s) -> void {
   s.integer(display.overscan);
   s.integer(display.vdisp);
 
-  if(system.fastPPU()) {
-    return ppufast.serialize(s);
-  }
-
   Thread::serialize(s);
   PPUcounter::serialize(s);
 

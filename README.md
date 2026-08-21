@@ -3,22 +3,21 @@ bsnes-fastlink
 
 ![bsnes logo](bsnes/target-bsnes/resource/logo.png)
 
-bsnes-fastlink is a Windows/Vulkan-focused fork of bsnes tuned for standard
-play and speedrun practice, with the priority on reducing input-to-photon
-latency while preserving the core SNES emulation behavior.
+bsnes-fastlink is a Windows/Vulkan-focused, accuracy-only fork of bsnes for
+speedrun practice. Frontend latency is reduced without speculative execution,
+overclocking, compatibility hacks, or alternate emulation engines.
 
 This fork is based on bsnes, originally developed by Near.
 
 Latest FastLink Changes
 -----------------------
 
-The `experimental-core` branch now defaults to an accuracy-first core profile.
-`FastLink/AccuracyFirst: true` selects the cycle-rendered PPU and accurate DSP,
-disables behavioral hotfixes, fast math, delayed coprocessor synchronization,
-HLE preference, PPU limit bypasses, and CPU/coprocessor overclocking. Run-ahead
-remains available because its speculative frames are discarded and the
-committed machine state is restored. Set the option to `false` to restore the
-Windows fast-PPU/HD Mode 7 profile. See the
+The `experimental-core` branch has one emulation path: stock CPU and
+coprocessor clocks, timed 5A22 math, cycle-rendered PPU with hardware limits,
+Gaussian DSP, continuous coprocessor synchronization, and low-level
+enhancement-chip emulation. The former fast/HD PPU, run-ahead, compatibility
+hotfixes, inaccurate DSP/math modes, overclocking, and HLE fallback engines
+have been removed from the build and source tree. See the
 [core accuracy audit](docs/core-accuracy-audit.md) for the source comparison,
 OpenSFC hardware-boundary review, known gaps, changes, and validation results.
 
@@ -36,31 +35,20 @@ around the low-latency path:
     serving 128 KiB WRAM snapshots with CORS headers for the Spectra prototype.
   - Updated WASAPI defaults for shared-mode, nonblocking, 48000 Hz output so
     other programs can keep using the sound device.
-  - Added FastLink configuration keys for RAM Trace, run-ahead requests,
-    non-Windows input polling, thread affinity, timer resolution, software frame
-    pacing, and low-latency defaults.
-  - Enabled HD Mode 7 defaults in this fork: scale defaults to 4x, perspective
-    correction is on, mosaic handling is on, and supersampling is off by default
-    for speed.
-  - Disabled shader/software-filter defaults on the Windows fast path to avoid
+  - Added FastLink configuration keys for RAM Trace, non-Windows input polling,
+    thread affinity, timer resolution, software frame pacing, and low-latency
+    defaults.
+  - Disabled shader/software-filter defaults on the Windows latency path to avoid
     extra frame work.
   - Removed the old Direct3D 9 runtime path from this fork's Windows build.
 
-Run-Ahead Status
-----------------
+Accuracy-Only Core
+------------------
 
-`FastLink/RunAhead` is exposed in the config and clamped to 0-4 frames generally
-(1-4 on Windows). The
-x64 Windows build uses libco's serializable Win64 coroutine backend, allowing
-deterministic run-ahead states without relying on opaque Windows fiber stacks.
-Discarded fast-PPU frames also suppress rasterization inside the core, avoiding
-HD Mode 7 work for frames that will never be presented.
-The audio stream resamplers are restored with each run-ahead state so
-speculative samples cannot create waveform discontinuities in committed audio.
-
-On Windows the low-latency profile enforces a minimum of one run-ahead frame;
-older configuration files containing `FastLink/RunAhead: 0` are normalized to
-`1` when loaded.
+Core timing and behavior are not user-selectable. Obsolete hack keys remaining
+in old configuration files are inert, and libretro no longer advertises them.
+Enhancement-chip firmware must be supplied wherever the
+low-level implementation requires it; there is no high-level fallback.
 
 Frame pacing occurs immediately before core execution so the event-driven
 Win32 Raw Input thread can publish controller changes until the latest safe
@@ -104,15 +92,14 @@ runtime path:
   - Audio exclusive mode: disabled for WASAPI shared-device compatibility
   - Audio blocking: disabled
   - Native file dialogs: enabled
-  - Cycle-rendered PPU: enabled by the accuracy-first profile
-  - Software filters: disabled by default on the fast path
+  - Cycle-rendered PPU: the only compiled PPU
+  - Software filters: disabled by default on the latency path
 
 Unique Features
 ---------------
 
   - True Super Game Boy emulation (using the SameBoy core by Lior Halphon)
-  - HD mode 7 graphics with optional supersampling (by DerKoun)
-  - Low-level emulation of all SNES coprocessors (DSP-n, ST-01n, Cx4)
+  - Low-level enhancement-chip emulation when required firmware is available
   - Multi-threaded PPU graphics renderer
   - Speed mode settings which retain smooth audio output (50%, 75%, 100%, 150%, 200%)
   - Built-in games database with thousands of game entries
@@ -140,11 +127,6 @@ Standard Features
   - Selectable unknown-device HID mapping via `FastLink/GenericHIDMapping`
   - Localhost RAM Trace HTTP service for external practice tooling
   - Periodic auto-saving of game saves
-  - Sprite limit disable support
-  - Cubic audio interpolation support
-  - Optional high-level emulation of most SNES coprocessors
-  - Optional emulation of flaws in older emulators for compatibility with older unofficial software
-  - CPU, SA1, and SuperFX overclocking support
   - Frame advance support
   - Screenshot support
   - Cheat code search support
