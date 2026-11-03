@@ -29,6 +29,7 @@ struct Settings : Markup::Node {
     bool aspectCorrection = true;
     bool overscan = false;
     bool blur = false;
+    bool hdMode7 = true;
     string filter = "None";
   } video;
 

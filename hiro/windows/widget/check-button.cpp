@@ -13,6 +13,8 @@ auto pCheckButton::construct() -> void {
 
 auto pCheckButton::destruct() -> void {
   DestroyWindow(hwnd);
+  hwnd = nullptr;
+  if(nativeImages) { ImageList_Destroy(nativeImages); nativeImages = nullptr; }
 }
 
 auto pCheckButton::minimumSize() const -> Size {
@@ -41,12 +43,10 @@ auto pCheckButton::setChecked(bool checked) -> void {
 
 auto pCheckButton::setEnabled(bool enabled) -> void {
   pWidget::setEnabled(enabled);
-  _setState();
 }
 
 auto pCheckButton::setFont(const Font& font) -> void {
   pWidget::setFont(font);
-  _setState();
 }
 
 auto pCheckButton::setIcon(const image& icon) -> void {
@@ -63,7 +63,6 @@ auto pCheckButton::setText(const string& text) -> void {
 
 auto pCheckButton::setVisible(bool visible) -> void {
   pWidget::setVisible(visible);
-  _setState();
 }
 
 //
@@ -75,25 +74,16 @@ auto pCheckButton::onToggle() -> void {
 }
 
 auto pCheckButton::windowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) -> maybe<LRESULT> {
-  if(msg == WM_PAINT) {
-    PAINTSTRUCT ps;
-    BeginPaint(hwnd, &ps);
-    auto buttonState = Button_GetState(hwnd);
-    Button_CustomDraw(hwnd, ps,
-      state().bordered, state().checked, self().enabled(true), buttonState,
-      self().font(true), state().icon, state().orientation, state().text
-    );
-    EndPaint(hwnd, &ps);
-    return false;
-  }
-
+  // Native BUTTON handles painting, focus cues, Space/Enter and click dispatch.
   return pWidget::windowProc(hwnd, msg, wparam, lparam);
 }
 
 //
 
 auto pCheckButton::_setState() -> void {
-  InvalidateRect(hwnd, 0, false);
+  auto style = GetWindowLongPtr(hwnd, GWL_STYLE);
+  SetWindowLongPtr(hwnd, GWL_STYLE, state().bordered ? style & ~BS_FLAT : style | BS_FLAT);
+  Button_SetNativeState(hwnd, nativeImages, state().icon, state().orientation, state().text);
 }
 
 }

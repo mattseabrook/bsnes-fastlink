@@ -247,6 +247,8 @@ auto Program::load(uint id, string name, string type, vector<string> options) ->
 }
 
 auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height, uint scale) -> void {
+  const bool captureTiming = frameTiming.enabled();
+  const auto timingVideoBegin = captureTiming ? chrono::nanosecond() : 0;
   #if defined(BUILD_DEBUG)
   static uint64 videoFrameTraceCounter = 0;
   videoFrameTraceCounter++;
@@ -330,7 +332,9 @@ auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height
     fastLinkCrashStep("Program::videoFrame: released");
     if(traceFrame) fastLinkDebug("Program::videoFrame[%llu] video.output begin", (unsigned long long)videoFrameTraceCounter);
     fastLinkCrashStep("Program::videoFrame: output begin");
+    const auto timingOutputBegin = captureTiming ? chrono::nanosecond() : 0;
     video.output(outputWidth, outputHeight);
+    if(captureTiming) frameTiming.frameOutput += chrono::nanosecond() - timingOutputBegin;
     fastLinkCrashStep("Program::videoFrame: output done");
     if(traceFrame) fastLinkDebug("Program::videoFrame[%llu] video.output done", (unsigned long long)videoFrameTraceCounter);
   } else {
@@ -340,6 +344,7 @@ auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height
   if(presentation.frameAdvance.checked()) {
     frameAdvanceLock = true;
   }
+  if(captureTiming) frameTiming.frameVideo += chrono::nanosecond() - timingVideoBegin;
 
   static uint frameCounter = 0;
   static uint64 previous, current;

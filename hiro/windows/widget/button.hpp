@@ -18,6 +18,7 @@ struct pButton : pWidget {
   auto windowProc(HWND, UINT, WPARAM, LPARAM) -> maybe<LRESULT> override;
 
   auto _setState() -> void;
+  HIMAGELIST nativeImages = nullptr;
 };
 
 }

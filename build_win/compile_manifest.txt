@@ -13,7 +13,6 @@ bsnes/sfc/cpu/cpu.cpp|build_win/obj/sfc-cpu.obj|cpp
 bsnes/sfc/smp/smp.cpp|build_win/obj/sfc-smp.obj|cpp
 bsnes/sfc/dsp/dsp.cpp|build_win/obj/sfc-dsp.obj|cpp
 bsnes/sfc/ppu/ppu.cpp|build_win/obj/sfc-ppu.obj|cpp
-bsnes/sfc/ppu-fast/ppu.cpp|build_win/obj/sfc-ppu-fast.obj|cpp
 bsnes/sfc/expansion/expansion.cpp|build_win/obj/sfc-expansion.obj|cpp
 bsnes/sfc/coprocessor/coprocessor.cpp|build_win/obj/sfc-coprocessor.obj|cpp
 bsnes/sfc/slot/slot.cpp|build_win/obj/sfc-slot.obj|cpp

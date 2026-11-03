@@ -7,6 +7,7 @@ auto pPopupMenu::construct() -> void {
 }
 
 auto pPopupMenu::destruct() -> void {
+  if(hmenu) while(GetMenuItemCount(hmenu) > 0) RemoveMenu(hmenu, 0, MF_BYPOSITION);
   if(hmenu) { DestroyMenu(hmenu); hmenu = nullptr; }
   DestroyWindow(hwnd);
 }
@@ -23,8 +24,8 @@ auto pPopupMenu::setFont(const Font& font) -> void {
 auto pPopupMenu::setVisible(bool visible) -> void {
   if(!visible) return;
 
-  if(hmenu) DestroyMenu(hmenu);
-  hmenu = CreatePopupMenu();
+  if(!hmenu) hmenu = CreatePopupMenu();
+  while(GetMenuItemCount(hmenu) > 0) RemoveMenu(hmenu, 0, MF_BYPOSITION);
 
   MENUINFO mi{sizeof(MENUINFO)};
   mi.fMask = MIM_STYLE;
@@ -35,6 +36,8 @@ auto pPopupMenu::setVisible(bool visible) -> void {
 
   for(auto& action : state().actions) {
     if(!action->self()) continue;
+    action->self()->position = ~0u;
+    if(!action->visible()) continue;
     action->self()->position = position;
     unsigned enabled = action->enabled() ? 0 : MF_GRAYED;
 

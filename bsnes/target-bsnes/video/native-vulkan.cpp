@@ -397,6 +397,7 @@ struct NativeVideoImplementation {
   }
 
   auto clear() -> void {
+    if(!prepareUpload()) return;
     if(_mappedStaging && _bufferWidth && _bufferHeight) {
       memset(_mappedStaging, 0, _bufferWidth * _bufferHeight * 4);
     }
@@ -460,9 +461,8 @@ struct NativeVideoImplementation {
 
     for(uint attempt = 0; attempt < 2; attempt++) {
       uint32_t frameIndex = _frameIndex % _imageCount;
-      if(vkWaitForFences(_device, 1, &_fences[frameIndex], VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-        return false;
-      }
+      // prepareUpload() retired the newest submission on our single graphics
+      // queue. All older frame slots have therefore completed as well.
 
       uint32_t imageIndex = 0;
       auto result = vkAcquireNextImageKHR(
@@ -560,6 +560,7 @@ struct NativeVideoImplementation {
       recoverFrameFence(frameIndex);
       return;
     }
+    _textureLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     _stagingFrameIndex = frameIndex;
     _stagingFramePending = true;
 
@@ -570,7 +571,7 @@ struct NativeVideoImplementation {
     presentInfo.pSwapchains = &_swapchain;
     presentInfo.pImageIndices = &imageIndex;
     result = vkQueuePresentKHR(_queue, &presentInfo);
-    _frameIndex = (_frameIndex + 1) % _maxImages;
+    _frameIndex = (_frameIndex + 1) % _imageCount;
     if(traceOutput) fastLinkDebug("NativeVulkan::output[%llu] present result=%d nextFrameIndex=%lu", (unsigned long long)outputTraceCounter, result, (unsigned long)_frameIndex);
 
     if(
@@ -706,9 +707,14 @@ struct NativeVideoImplementation {
     _swapchain = newSwapchain;
     if(oldSwapchain) vkDestroySwapchainKHR(_device, oldSwapchain, nullptr);
 
-    vkGetSwapchainImagesKHR(_device, _swapchain, &_imageCount, nullptr);
-    if(_imageCount > _maxImages) _imageCount = _maxImages;
-    vkGetSwapchainImagesKHR(_device, _swapchain, &_imageCount, _swapImages);
+    result = vkGetSwapchainImagesKHR(_device, _swapchain, &_imageCount, nullptr);
+    // Never truncate the list: acquire can return any real image index.
+    if(result != VK_SUCCESS || !_imageCount || _imageCount > _maxImages) {
+      _imageCount = 0;
+      return false;
+    }
+    result = vkGetSwapchainImagesKHR(_device, _swapchain, &_imageCount, _swapImages);
+    if(result != VK_SUCCESS) return false;
     if(owner.fullScreen() && _fullScreenExclusiveSupported) {
       result = _acquireFullScreenExclusiveMode(_device, _swapchain);
       _fullScreenExclusiveAcquired = result == VK_SUCCESS;
@@ -886,6 +892,8 @@ struct NativeVideoImplementation {
   }
 
   auto refreshDescriptorSets() -> bool {
+    // Updating descriptors invalidates recorded commands that reference them.
+    for(auto& recorded : _recordedFrames) recorded.valid = false;
     if(!_descriptorPool || !_texView || !_sampler) return true;
 
     for(uint i = 0; i < _imageCount; i++) {
@@ -1070,6 +1078,7 @@ struct NativeVideoImplementation {
   }
 
   auto createCommandBuffers() -> bool {
+    for(auto& recorded : _recordedFrames) recorded.valid = false;
     if(_imageCount > _maxImages) return false;
     VkCommandBufferAllocateInfo allocateInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     allocateInfo.commandPool = _commandPool;
@@ -1249,11 +1258,19 @@ struct NativeVideoImplementation {
   }
 
   auto recordCommandBuffer(uint32_t imageIndex, uint outputWidth, uint outputHeight) -> void {
+    if(!outputWidth || outputWidth > _swapExtent.width) outputWidth = _swapExtent.width;
+    if(!outputHeight || outputHeight > _swapExtent.height) outputHeight = _swapExtent.height;
+    auto& recorded = _recordedFrames[imageIndex];
+    // The source buffer, descriptors and framebuffer remain fixed between
+    // resizes. Re-submit the commands while uploading fresh mapped pixels.
+    // The first UNDEFINED-layout upload is re-recorded once before reuse.
+    if(recorded.valid && recorded.width == outputWidth && recorded.height == outputHeight
+    && recorded.initialLayout == _textureLayout) return;
     auto commandBuffer = _commandBuffers[imageIndex];
     vkResetCommandBuffer(commandBuffer, 0);
 
     VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    beginInfo.flags = 0;  // reusable; prepareUpload() prevents concurrent use
     vkBeginCommandBuffer(commandBuffer, &beginInfo);
 
     VkImageMemoryBarrier imageBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -1301,9 +1318,6 @@ struct NativeVideoImplementation {
     renderPassInfo.pClearValues = &clearValue;
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    if(!outputWidth || outputWidth > _swapExtent.width) outputWidth = _swapExtent.width;
-    if(!outputHeight || outputHeight > _swapExtent.height) outputHeight = _swapExtent.height;
-
     int32_t viewportX = (int32_t)(_swapExtent.width - outputWidth) / 2;
     int32_t viewportY = (int32_t)(_swapExtent.height - outputHeight) / 2;
 
@@ -1318,7 +1332,7 @@ struct NativeVideoImplementation {
 
     vkCmdEndRenderPass(commandBuffer);
     vkEndCommandBuffer(commandBuffer);
-    _textureLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    recorded = {true, outputWidth, outputHeight, _textureLayout};
   }
 
   NativeVideoManager& owner;
@@ -1342,6 +1356,12 @@ struct NativeVideoImplementation {
   VkImageView _swapViews[_maxImages] = {};
   VkFramebuffer _framebuffers[_maxImages] = {};
   VkCommandBuffer _commandBuffers[_maxImages] = {};
+  struct RecordedFrame {
+    bool valid = false;
+    uint width = 0, height = 0;
+    VkImageLayout initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  };
+  RecordedFrame _recordedFrames[_maxImages] = {};
   VkDescriptorSet _descriptorSets[_maxImages] = {};
   VkFence _fences[_maxImages] = {};
   VkSemaphore _acquireSemaphores[_maxImages] = {};
@@ -1513,6 +1533,7 @@ auto NativeVideoManager::setFormat(string format) -> bool {
 
 auto NativeVideoManager::setShader(string shader) -> bool {
   if(shader != "None" && shader != "Blur") return false;
+  if(_shader == shader) return true;
   _shader = shader;
   if(_impl && _ready) return _impl->updateSampler();
   return true;
@@ -1583,15 +1604,10 @@ auto NativeVideoManager::defaultMonitorName() const -> string {
 }
 
 auto NativeVideoManager::currentClientSize() const -> Size {
-  if(_fullScreen) {
-    for(auto& monitor : hasMonitors()) {
-      if(monitor.name == _monitor) return {(uint)monitor.width, (uint)monitor.height};
-    }
-    auto monitors = hasMonitors();
-    if(monitors) return {(uint)monitors.first().width, (uint)monitors.first().height};
-  }
-
-  auto hwnd = (HWND)_context;
+  // This is called several times per frame. Enumerating displays here used
+  // to perform OS/driver queries and allocate strings throughout fullscreen
+  // gameplay. The actual presentation window already knows its client size.
+  auto hwnd = _fullScreen && _impl ? _impl->_fullScreenWindow : (HWND)_context;
   if(!hwnd || !IsWindow(hwnd)) return {};
 
   RECT rect = {};

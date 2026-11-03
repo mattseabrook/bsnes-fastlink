@@ -9,13 +9,13 @@ auto pMenuCheckItem::destruct() -> void {
 }
 
 auto pMenuCheckItem::setChecked(bool checked) -> void {
-  if(auto menu = _parentMenu()) {
-    CheckMenuItem(menu->hmenu, position, MF_BYPOSITION | (checked ? MF_CHECKED : MF_UNCHECKED));
+  if(auto menu = _nativeParentMenu()) {
+    CheckMenuItem(menu, position, MF_BYPOSITION | (checked ? MF_CHECKED : MF_UNCHECKED));
   }
 }
 
 auto pMenuCheckItem::setText(const string& text) -> void {
-  _synchronize();
+  _setText(text);
 }
 
 auto pMenuCheckItem::onToggle() -> void {

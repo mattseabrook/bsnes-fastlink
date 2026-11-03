@@ -13,6 +13,7 @@ auto Configuration::process(Markup::Node document, bool load) -> void {
   bind(natural, "System/PPU1/VRAM/Size", system.ppu1.vram.size);
   bind(natural, "System/PPU2/Version", system.ppu2.version);
   bind(boolean, "Video/BlurEmulation", video.blurEmulation);
+  bind(boolean, "Video/HDMode7", video.hdMode7);
   bind(boolean, "Video/ColorEmulation", video.colorEmulation);
 
   #undef bind

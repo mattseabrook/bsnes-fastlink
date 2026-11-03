@@ -9,20 +9,29 @@ auto MessageDialog::checked() const -> bool {
 }
 
 auto MessageDialog::error(const vector<string>& buttons) -> string {
+  state.nativeIcon = 1;
   state.buttons = buttons;
+  #if !defined(HIRO_WINDOWS)
   state.icon = Icon::Prompt::Error;
+  #endif
   return _run();
 }
 
 auto MessageDialog::information(const vector<string>& buttons) -> string {
+  state.nativeIcon = 2;
   state.buttons = buttons;
+  #if !defined(HIRO_WINDOWS)
   state.icon = Icon::Prompt::Information;
+  #endif
   return _run();
 }
 
 auto MessageDialog::question(const vector<string>& buttons) -> string {
+  state.nativeIcon = 3;
   state.buttons = buttons;
+  #if !defined(HIRO_WINDOWS)
   state.icon = Icon::Prompt::Question;
+  #endif
   return _run();
 }
 
@@ -59,14 +68,63 @@ auto MessageDialog::setTitle(const string& title) -> type& {
 }
 
 auto MessageDialog::warning(const vector<string>& buttons) -> string {
+  state.nativeIcon = 4;
   state.buttons = buttons;
+  #if !defined(HIRO_WINDOWS)
   state.icon = Icon::Prompt::Warning;
+  #endif
   return _run();
 }
 
 auto MessageDialog::_run() -> string {
   if(!state.buttons) return {};  //nothing to do
   Application::Namespace tr{"MessageDialog"};
+
+  #if defined(HIRO_WINDOWS)
+  // Native Task Dialog preserves arbitrary button labels and the optional
+  // verification checkbox without a second GUI implementation/message loop.
+  vector<wchar_t> labelText;
+  vector<uint> labelOffsets;
+  for(auto& label : state.buttons) {
+    labelOffsets.append(labelText.size());
+    utf16_t nativeLabel(tr(label));
+    for(uint i : range(nativeLabel.size())) labelText.append(nativeLabel[i]);
+    labelText.append(L'\0');
+  }
+  vector<TASKDIALOG_BUTTON> buttons;
+  for(uint i : range(state.buttons.size())) {
+    TASKDIALOG_BUTTON button{};
+    button.nButtonID = 1000 + i;
+    button.pszButtonText = labelText.data() + labelOffsets[i];
+    buttons.append(button);
+  }
+  utf16_t title(state.title), text(state.text), option(state.option);
+  TASKDIALOGCONFIG dialog{};
+  dialog.cbSize = sizeof(dialog);
+  dialog.hwndParent = state.relativeTo && state.relativeTo->self()
+    ? state.relativeTo->self()->hwnd : GetActiveWindow();
+  dialog.hInstance = GetModuleHandle(nullptr);
+  dialog.dwFlags = (TASKDIALOG_FLAGS)(TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW | TDF_SIZE_TO_CONTENT);
+  if(state.checked) dialog.dwFlags = (TASKDIALOG_FLAGS)(dialog.dwFlags | TDF_VERIFICATION_FLAG_CHECKED);
+  dialog.pszWindowTitle = title;
+  dialog.pszContent = text;
+  dialog.pszVerificationText = state.option ? (const wchar_t*)option : nullptr;
+  if(state.nativeIcon == 1) dialog.pszMainIcon = TD_ERROR_ICON;
+  if(state.nativeIcon == 2 || state.nativeIcon == 3) dialog.pszMainIcon = TD_INFORMATION_ICON;
+  if(state.nativeIcon == 4) dialog.pszMainIcon = TD_WARNING_ICON;
+  dialog.cButtons = buttons.size();
+  dialog.pButtons = buttons.data();
+  dialog.nDefaultButton = 1000 + buttons.size() - 1;
+  int selected = IDCANCEL;
+  BOOL checked = state.checked;
+  pApplication::state().modalCount++;
+  auto result = TaskDialogIndirect(&dialog, &selected, nullptr, &checked);
+  pApplication::state().modalCount--;
+  state.checked = checked;
+  state.dismissed = FAILED(result) || selected < 1000 || selected >= 1000 + (int)state.buttons.size();
+  state.response = state.dismissed ? state.buttons.last() : state.buttons[selected - 1000];
+  return state.response;
+  #else
 
   Window window;
     VerticalLayout layout{&window};
@@ -125,6 +183,7 @@ auto MessageDialog::_run() -> string {
   window.setVisible(false);
 
   return state.response;
+  #endif
 }
 
 #endif

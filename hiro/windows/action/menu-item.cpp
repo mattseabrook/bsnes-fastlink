@@ -12,11 +12,10 @@ auto pMenuItem::destruct() -> void {
 
 auto pMenuItem::setIcon(const image& icon) -> void {
   _createBitmap();
-  _synchronize();
 }
 
 auto pMenuItem::setText(const string& text) -> void {
-  _synchronize();
+  _setText(text);
 }
 
 auto pMenuItem::onActivate() -> void {

@@ -8,6 +8,7 @@ auto pMenu::construct() -> void {
 
 auto pMenu::destruct() -> void {
   if(hbitmap) { DeleteObject(hbitmap); hbitmap = nullptr; }
+  if(hmenu) while(GetMenuItemCount(hmenu) > 0) RemoveMenu(hmenu, 0, MF_BYPOSITION);
   if(hmenu) { DestroyMenu(hmenu); hmenu = nullptr; }
 }
 
@@ -21,11 +22,10 @@ auto pMenu::remove(sAction action) -> void {
 
 auto pMenu::setIcon(const image& icon) -> void {
   _createBitmap();
-  _synchronize();
 }
 
 auto pMenu::setText(const string& text) -> void {
-  _synchronize();
+  _setText(text);
 }
 
 auto pMenu::_createBitmap() -> void {
@@ -35,11 +35,11 @@ auto pMenu::_createBitmap() -> void {
   //and diverge from standard Windows rendering.
 }
 
-//Windows actions lack the ability to toggle visibility.
-//To support this, menus must be destroyed and recreated when toggling any action's visibility.
+// Keep native handles stable. RemoveMenu detaches child menus without destroying
+// their independently owned handles, including while a menu command is running.
 auto pMenu::_update() -> void {
-  if(hmenu) DestroyMenu(hmenu);
-  hmenu = CreatePopupMenu();
+  if(!hmenu) hmenu = CreatePopupMenu();
+  while(GetMenuItemCount(hmenu) > 0) RemoveMenu(hmenu, 0, MF_BYPOSITION);
 
   MENUINFO mi{sizeof(MENUINFO)};
   mi.fMask = MIM_STYLE;
@@ -50,6 +50,8 @@ auto pMenu::_update() -> void {
 
   for(auto& action : state().actions) {
     if(!action->self()) continue;
+    action->self()->position = ~0u;
+    if(!action->visible()) continue;
     action->self()->position = position;
     unsigned enabled = action->enabled() ? 0 : MF_GRAYED;
 

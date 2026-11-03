@@ -20,6 +20,7 @@ struct Configuration {
   } system;
 
   struct Video {
+    bool hdMode7 = true;
     bool blurEmulation = true;
     bool colorEmulation = true;
   } video;

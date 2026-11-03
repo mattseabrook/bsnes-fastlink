@@ -1,4 +1,8 @@
 #include "../bsnes.hpp"
+#include <sfc/sfc.hpp>
+#undef platform
+#include "../fastlink/timing.hpp"
+namespace { FastLinkTiming frameTiming; }
 #include "platform.cpp"
 #include "game.cpp"
 #include "game-pak.cpp"
@@ -157,20 +161,21 @@ LONG WINAPI fastLinkCrashHandler(EXCEPTION_POINTERS* ep) {
 #endif
 
 namespace {
-auto fastLinkFrameDurationNanoseconds(const string& region) -> uint64 {
-  if(region == "PAL") {
-    double frequency = Emulator::Constants::Colorburst::PAL * 4.8;
-    double clocks = 1364.0 * 312.0;
+auto fastLinkFrameDurationNanoseconds() -> uint64 {
+  bool interlace = SuperFamicom::cpu.interlace();
+  double frequency = SuperFamicom::system.cpuFrequency();
+  if(SuperFamicom::Region::PAL()) {
+    double clocks = interlace ? 1364.0 * 312.5 + 2.0 : 1364.0 * 312.0;
     return (uint64)(1'000'000'000.0 * clocks / frequency + 0.5);
   }
 
-  double frequency = Emulator::Constants::Colorburst::NTSC * 6.0;
-  double clocks = 1364.0 * 262.0 - 2.0;  //average one short scanline every other field
+  double clocks = interlace ? 1364.0 * 262.5 : 1364.0 * 262.0 - 2.0;
   return (uint64)(1'000'000'000.0 * clocks / frequency + 0.5);
 }
 }
 
 auto Program::create() -> void {
+  frameTiming.initialize();
   #if defined(PLATFORM_WINDOWS)
   SetUnhandledExceptionFilter(fastLinkCrashHandler);
   _set_invalid_parameter_handler(fastLinkInvalidParameterHandler);
@@ -302,6 +307,9 @@ auto Program::create() -> void {
 }
 
 auto Program::main() -> void {
+  const bool captureTiming = frameTiming.enabled();
+  if(captureTiming) frameTiming.beginFrame();
+  const auto timingBegin = captureTiming ? chrono::nanosecond() : 0;
   #if defined(BUILD_DEBUG)
   static uint64 mainTraceCounter = 0;
   mainTraceCounter++;
@@ -322,6 +330,7 @@ auto Program::main() -> void {
   static bool previouslyModal = false;
   bool currentlyModal = Application::modal();
   if(currentlyModal) {
+    frameTiming.idle();
     if(!previouslyModal) audio.clear();
     previouslyModal = true;
     if(traceFrame) fastLinkDebug("Program::main[%llu] modal return", (unsigned long long)mainTraceCounter);
@@ -352,6 +361,7 @@ auto Program::main() -> void {
   }
 
   if(currentlyInactive) {
+    frameTiming.idle();
     if(traceFrame) fastLinkDebug("Program::main[%llu] inactive return", (unsigned long long)mainTraceCounter);
     resetFramePacer();
     #if defined(PLATFORM_WINDOWS)
@@ -370,12 +380,16 @@ auto Program::main() -> void {
   // continue publishing newer controller state for the core's just-in-time
   // input polls. Pacing after emulation makes the completed frame sit idle and
   // increases the age of the input represented by the next presented frame.
+  const auto timingPace = captureTiming ? chrono::nanosecond() : 0;
+  const auto discardedBefore = framePacer.discardedNanoseconds;
   paceFrame();
+  const auto timingPrepare = captureTiming ? chrono::nanosecond() : 0;
   // Retire the previous GPU upload now, before entering the core. Waiting for
   // upload ownership from videoFrame() would add a predictable stall after the
   // core has already sampled input.
   #if defined(PLATFORM_WINDOWS)
   if(emulator && emulator->loaded() && !video.prepare()) {
+    frameTiming.idle();
     // Do not advance emulation without presenting the completed frame.  The
     // Vulkan backend waits for ordinary GPU/swapchain pressure; reaching this
     // path indicates a real surface/device failure.
@@ -385,10 +399,15 @@ auto Program::main() -> void {
   #endif
 
   if(traceFrame) fastLinkDebug("Program::main[%llu] frame begin", (unsigned long long)mainTraceCounter);
+  const auto timingRun = captureTiming ? chrono::nanosecond() : 0;
   emulator->run();
+  const auto timingTrace = captureTiming ? chrono::nanosecond() : 0;
   if(traceFrame) fastLinkDebug("Program::main[%llu] frame done", (unsigned long long)mainTraceCounter);
 
   fastLinkRAMTraceService.publishFrame();
+  if(captureTiming) frameTiming.record(timingBegin, timingPace, timingPrepare,
+    timingRun, timingTrace, chrono::nanosecond(), fastLinkFrameDurationNanoseconds(),
+    framePacer.discardedNanoseconds - discardedBefore);
   if(traceFrame) fastLinkDebug("Program::main[%llu] published RAM trace if requested", (unsigned long long)mainTraceCounter);
 
   if(emulatorSettings.autoSaveMemory.checked()) {
@@ -404,23 +423,21 @@ auto Program::main() -> void {
 
 auto Program::paceFrame() -> void {
   if(!settings.fastLink.softwareFramePacing || fastForwarding) return resetFramePacer();
-  if(settings.video.blocking || settings.audio.blocking) return resetFramePacer();
+  if((video.ready() && video.hasBlocking() && video.blocking())
+  || (audio.ready() && audio.hasBlocking() && audio.blocking())) return resetFramePacer();
 
-  uint64 frameDuration = fastLinkFrameDurationNanoseconds(superFamicom.region);
+  uint64 frameDuration = fastLinkFrameDurationNanoseconds();
   auto now = chrono::nanosecond();
-  if(!framePaceDeadline || now > framePaceDeadline + frameDuration) {
-    framePaceDeadline = now + frameDuration;
-    return;
-  }
+  const auto deadline = framePacer.next(now, frameDuration);
 
-  while((now = chrono::nanosecond()) + 2'000'000ull < framePaceDeadline) {
+  while((now = chrono::nanosecond()) + 2'000'000ull < deadline) {
     #if defined(PLATFORM_WINDOWS)
-    SwitchToThread();
+    Sleep(1);
     #else
-    ::std::this_thread::yield();
+    ::std::this_thread::sleep_for(::std::chrono::milliseconds(1));
     #endif
   }
-  while((now = chrono::nanosecond()) < framePaceDeadline) {
+  while((now = chrono::nanosecond()) < deadline) {
     #if defined(PLATFORM_WINDOWS)
     YieldProcessor();
     #elif defined(__SSE2__)
@@ -429,14 +446,14 @@ auto Program::paceFrame() -> void {
     ::std::this_thread::yield();
     #endif
   }
-  framePaceDeadline += frameDuration;
 }
 
 auto Program::resetFramePacer() -> void {
-  framePaceDeadline = 0;
+  framePacer.reset();
 }
 
 auto Program::quit() -> void {
+  frameTiming.save();
   presentation.saveWindowGeometry();
 
   //make closing the program feel more responsive

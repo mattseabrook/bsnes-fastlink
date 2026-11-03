@@ -24,6 +24,7 @@ private:
     bool checked = false;
     bool dismissed = false;
     image icon;
+    uint nativeIcon = 0;
     string option;
     sWindow relativeTo;
     string response;

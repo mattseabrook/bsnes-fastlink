@@ -43,5 +43,7 @@ struct Screen {
     uint1 colorHalve;
   } math;
 
+  auto runMode7HD(const Math& previousMath) -> void;
+
   friend class PPU;
 };

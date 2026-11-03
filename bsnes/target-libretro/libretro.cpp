@@ -94,7 +94,11 @@ static void flush_variables()
 			emulator->configure("Video/BlurEmulation", false);
 	}
 
-	variable = { "bsnes_ppu_show_overscan", nullptr };
+  variable = { "bsnes_hd_mode7", nullptr };
+  if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) && variable.value)
+    emulator->configure("Video/HDMode7", strcmp(variable.value, "OFF") != 0);
+
+  variable = { "bsnes_ppu_show_overscan", nullptr };
 	if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) && variable.value)
 	{
 		if (strcmp(variable.value, "ON") == 0)
@@ -307,6 +311,7 @@ static void set_environment_info(retro_environment_t cb)
 	static const retro_variable vars[] = {
 		{ "bsnes_aspect_ratio", "Aspect Ratio; Auto|8:7|4:3|NTSC|PAL" },
 		{ "bsnes_blur_emulation", "Blur emulation; OFF|ON" },
+		{ "bsnes_hd_mode7", "HD Mode 7 (2x); ON|OFF" },
 		{ "bsnes_ppu_show_overscan", "Show Overscan; OFF|ON" },
 		{ "bsnes_sgb_bios", "Preferred Super GameBoy BIOS (restart); SGB1.sfc|SGB2.sfc" },
 		{ "bsnes_video_filter", "Video Filter; None|NTSC (RF)|NTSC (Composite)|NTSC (S-Video)|NTSC (RGB)" },

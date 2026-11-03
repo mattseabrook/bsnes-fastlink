@@ -1,3 +1,5 @@
+#include "../fastlink/frame-pacer.hpp"
+
 struct Program : Lock, Emulator::Platform {
   Application::Namespace tr{"Program"};
 
@@ -170,7 +172,7 @@ public:
   bool loading = false;
 
   uint64 autoSaveTime;
-  uint64 framePaceDeadline = 0;
+  FastLinkFramePacer framePacer;
 
   uint64 statusTime;
   string statusMessage;

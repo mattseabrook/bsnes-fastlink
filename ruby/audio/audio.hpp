@@ -36,6 +36,7 @@ struct AudioDriver {
   virtual auto clear() -> void {}
   virtual auto level() -> double { return 0.5; }
   virtual auto output(const double samples[]) -> void {}
+  virtual auto setWorkerActive(bool active) -> void {}
 
 protected:
   Audio& super;
@@ -105,6 +106,7 @@ struct Audio {
 
 protected:
   Audio& self;
+  auto _reconfigure(const function<bool ()>& change) -> bool;
   unique_pointer<AudioDriver> instance;
   vector<nall::DSP::Resampler::Cubic> resamplers;
 

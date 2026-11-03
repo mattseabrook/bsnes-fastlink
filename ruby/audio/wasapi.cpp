@@ -32,9 +32,10 @@ auto WASAPITrace(const char* format, ...) -> void {
 struct AudioWASAPI : AudioDriver {
   AudioWASAPI& self = *this;
   AudioWASAPI(Audio& super) : AudioDriver(super) { construct(); }
-  ~AudioWASAPI() { destruct(); }
+  ~AudioWASAPI() { destruct(); if(workerStopEvent) CloseHandle(workerStopEvent); }
 
   auto create() -> bool override {
+    if(!workerStopEvent) return false;
     WASAPITrace("create begin devices=%u", (uint)self.devices.size());
     if(!self.devices) {
       WASAPITrace("create failed: no active render devices");
@@ -91,6 +92,12 @@ struct AudioWASAPI : AudioDriver {
   auto setFrequency(uint frequency) -> bool override { return initialize(); }
   auto setLatency(uint latency) -> bool override { return initialize(); }
 
+  auto setWorkerActive(bool active) -> void override {
+    workerStopping.store(!active, ::std::memory_order_release);
+    if(active) ResetEvent(workerStopEvent);
+    else SetEvent(workerStopEvent);
+  }
+
   auto clear() -> void override {
     static uint clearTraceCount = 0;
     if(clearTraceCount++ < 40) WASAPITrace("clear ready=%d audioClient=%p", self.isReady, (void*)self.audioClient);
@@ -105,6 +112,7 @@ struct AudioWASAPI : AudioDriver {
   }
 
   auto output(const double samples[]) -> void override {
+    if(workerStopping.load(::std::memory_order_acquire)) return;
     #if defined(BUILD_DEBUG)
     static uint outputTraceCount = 0;
     bool traceOutput = outputTraceCount++ < 80;
@@ -144,7 +152,7 @@ struct AudioWASAPI : AudioDriver {
       // to Audio's SPSC ring.  Dropping queued samples here caused discontinuous
       // waveforms (clicks) whenever the UI thread was briefly descheduled.
       while(self.queue.count >= queueLimit) {
-        if(WaitForSingleObject(self.eventHandle, INFINITE) != WAIT_OBJECT_0) break;
+        if(waitForAudio(INFINITE) != WAIT_OBJECT_0) return;
         if(!write()) break;
       }
     }
@@ -156,7 +164,7 @@ struct AudioWASAPI : AudioDriver {
     self.queue.count++;
 
     if(self.queue.count >= quantum) {
-      if(WaitForSingleObject(self.eventHandle, self.blocking ? INFINITE : 0) == WAIT_OBJECT_0 || !self.blocking) {
+      if(waitForAudio(self.blocking ? INFINITE : 0) == WAIT_OBJECT_0 || !self.blocking) {
         write();
       }
     }
@@ -164,6 +172,16 @@ struct AudioWASAPI : AudioDriver {
   }
 
 private:
+  // Independent of the endpoint handle, which recovery can recreate. Shutdown
+  // can wake an endpoint wait even after the device stops generating events.
+  HANDLE workerStopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+  ::std::atomic<bool> workerStopping{false};
+  auto waitForAudio(DWORD timeout) -> DWORD {
+    HANDLE events[] = {workerStopEvent, self.eventHandle};
+    auto result = WaitForMultipleObjects(2, events, FALSE, timeout);
+    return result == WAIT_OBJECT_0 + 1 ? WAIT_OBJECT_0 : WAIT_FAILED;
+  }
+
   struct Device {
     string id;
     string name;

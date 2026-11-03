@@ -15,13 +15,13 @@ auto pMenuRadioItem::setChecked() -> void {
       if(auto object = weak.acquire()) {
         if(auto menuRadioItem = dynamic_cast<mMenuRadioItem*>(object.data())) {
           if(auto self = menuRadioItem->self()) {
-            if(auto menu = self->_parentMenu()) {
+            if(auto menu = self->_nativeParentMenu()) {
               //CheckMenuRadioItem takes: lo, hi, id; checking only id when lo <= id <= hi
               //hiro does not force IDs to be linear, so to uncheck id, we use: lo == hi == id + 1 (out of range)
               //to check id, we use: lo == hi == id (only ID, but in range)
               CheckMenuRadioItem(
-                menu->hmenu,
-                self->position, self->position, self->position + (position != self->position),
+                menu,
+                self->position, self->position, self->position + (&self->reference != &reference),
                 MF_BYPOSITION
               );
             }
@@ -50,7 +50,7 @@ auto pMenuRadioItem::setGroup(sGroup group) -> void {
 }
 
 auto pMenuRadioItem::setText(const string& text) -> void {
-  _synchronize();
+  _setText(text);
 }
 
 auto pMenuRadioItem::onActivate() -> void {

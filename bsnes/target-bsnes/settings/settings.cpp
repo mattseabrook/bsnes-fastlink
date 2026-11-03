@@ -87,6 +87,7 @@ auto Settings::process(bool load) -> void {
   bind(boolean, "Video/AspectCorrection", video.aspectCorrection);
   bind(boolean, "Video/Overscan",         video.overscan);
   bind(boolean, "Video/Blur",             video.blur);
+  bind(boolean, "Video/HDMode7",           video.hdMode7);
   bind(text,    "Video/Filter",           video.filter);
   if(load) video.filter = "None";
 

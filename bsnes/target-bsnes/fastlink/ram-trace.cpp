@@ -131,6 +131,7 @@ auto FastLinkRAMTraceService::clearSnapshot() -> void {
 auto FastLinkRAMTraceService::publishFrame() -> void {
 #if defined(PLATFORM_WINDOWS)
   if(!_running.load(std::memory_order_relaxed)) return;
+  if(!_snapshotRequested.load(std::memory_order_relaxed)) return;
   if(!_snapshotRequested.exchange(false, std::memory_order_acquire)) return;
   static uint publishTraceCount = 0;
   bool tracePublish = publishTraceCount++ < 40;

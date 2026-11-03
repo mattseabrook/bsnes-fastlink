@@ -48,33 +48,40 @@
 
 namespace ruby {
 
+auto Audio::_reconfigure(const function<bool ()>& change) -> bool {
+  bool restart = _workerRunning.load(::std::memory_order_acquire);
+  if(restart) stopWorker();
+  bool result = change();
+  if(restart && instance->ready()) startWorker();
+  return result;
+}
+
 auto Audio::setExclusive(bool exclusive) -> bool {
   if(instance->exclusive == exclusive) return true;
   if(!instance->hasExclusive()) return false;
-  if(!instance->setExclusive(instance->exclusive = exclusive)) return false;
-  return true;
+  return _reconfigure([&] { return instance->setExclusive(instance->exclusive = exclusive); });
 }
 
 auto Audio::setContext(uintptr context) -> bool {
   if(instance->context == context) return true;
   if(!instance->hasContext()) return false;
-  if(!instance->setContext(instance->context = context)) return false;
-  return true;
+  return _reconfigure([&] { return instance->setContext(instance->context = context); });
 }
 
 auto Audio::setDevice(string device) -> bool {
   if(instance->device == device) return true;
   if(!instance->hasDevice(device)) return false;
-  if(!instance->setDevice(instance->device = device)) return false;
-  return true;
+  return _reconfigure([&] { return instance->setDevice(instance->device = device); });
 }
 
 auto Audio::setBlocking(bool blocking) -> bool {
   if(instance->blocking == blocking) return true;
   if(!instance->hasBlocking()) return false;
-  if(!instance->setBlocking(instance->blocking = blocking)) return false;
-  for(auto& resampler : resamplers) resampler.reset(instance->frequency);
-  return true;
+  return _reconfigure([&] {
+    if(!instance->setBlocking(instance->blocking = blocking)) return false;
+    for(auto& resampler : resamplers) resampler.reset(instance->frequency);
+    return true;
+  });
 }
 
 auto Audio::setDynamic(bool dynamic) -> bool {
@@ -92,23 +99,23 @@ auto Audio::setChannels(uint channels) -> bool {
   }
   if(instance->channels == channels) return true;
   if(!instance->hasChannels(channels)) return false;
-  if(!instance->setChannels(instance->channels = channels)) return false;
-  return true;
+  return _reconfigure([&] { return instance->setChannels(instance->channels = channels); });
 }
 
 auto Audio::setFrequency(uint frequency) -> bool {
   if(instance->frequency == frequency) return true;
   if(!instance->hasFrequency(frequency)) return false;
-  if(!instance->setFrequency(instance->frequency = frequency)) return false;
-  for(auto& resampler : resamplers) resampler.reset(instance->frequency);
-  return true;
+  return _reconfigure([&] {
+    if(!instance->setFrequency(instance->frequency = frequency)) return false;
+    for(auto& resampler : resamplers) resampler.reset(instance->frequency);
+    return true;
+  });
 }
 
 auto Audio::setLatency(uint latency) -> bool {
   if(instance->latency == latency) return true;
   if(!instance->hasLatency(latency)) return false;
-  if(!instance->setLatency(instance->latency = latency)) return false;
-  return true;
+  return _reconfigure([&] { return instance->setLatency(instance->latency = latency); });
 }
 
 //
@@ -197,6 +204,7 @@ auto Audio::startWorker() -> void {
   if(_workerRunning) return;
   _ringRead = 0;
   _ringWrite = 0;
+  instance->setWorkerActive(true);
   _workerRunning = true;
   _workerThread = ::std::thread([this] { _workerMain(); });
 }
@@ -204,6 +212,7 @@ auto Audio::startWorker() -> void {
 auto Audio::stopWorker() -> void {
   if(!_workerRunning) return;
   _workerRunning = false;
+  instance->setWorkerActive(false);
   _workerCV.notify_one();
   if(_workerThread.joinable()) _workerThread.join();
 }
@@ -228,7 +237,7 @@ auto Audio::_workerMain() -> void {
     // scheduling stalls without exposing an underrun. Startup uses the full
     // reserve; later underruns use a much smaller anti-chatter watermark.
     uint frequency = instance->frequency ? instance->frequency : 48000u;
-    uint startupFrames = min(_ringCapacity - 1, max(512u, frequency * 60u / 1000u));
+    uint startupFrames = min(_ringCapacity - 1, max(512u, frequency * 20u / 1000u));
     uint recoveryFrames = min(_ringCapacity - 1, max(128u, frequency * 8u / 1000u));
     uint primeFrames = startup ? startupFrames : recoveryFrames;
     if(!primed) {
@@ -244,7 +253,7 @@ auto Audio::_workerMain() -> void {
     if(read == write) {
       //Use a short recovery watermark to avoid rapid empty/non-empty chatter.
       //WASAPI normally has enough endpoint audio queued to cover this refill,
-      //so it does not recreate the old 60ms audible mute.
+      //so it does not recreate the startup reserve on each underrun.
       primed = false;
       ::std::unique_lock<::std::mutex> lock(_workerMutex);
       _workerCV.wait_for(lock, ::std::chrono::milliseconds(1), [&] {
@@ -258,16 +267,22 @@ auto Audio::_workerMain() -> void {
     // consumer side before draining. Keeping read-index ownership here avoids
     // the producer/consumer slot race while restoring real-time audio quickly.
     write = _ringWrite.load(::std::memory_order_acquire);
-    uint maxQueued = max(startupFrames * 2, min(_ringCapacity - 1, frequency / 5u));
+    uint maxQueued = max(startupFrames * 2, min(_ringCapacity - 1, frequency * 40u / 1000u));
     if(maxQueued >= _ringCapacity) maxQueued = _ringCapacity - 1;
     auto queued = _ringDistance(read, write);
     if(queued > maxQueued) {
-      read = (write + _ringCapacity - maxQueued) % _ringCapacity;
+      read = (write + _ringCapacity - recoveryFrames) % _ringCapacity;
       _ringRead.store(read, ::std::memory_order_release);
     }
 
-    //drain available samples
+    // Recheck during draining: WASAPI can block inside output(), so checking
+    // only before this loop misses the backlog created by a device stall.
     while(read != _ringWrite.load(::std::memory_order_acquire) && _workerRunning) {
+      write = _ringWrite.load(::std::memory_order_acquire);
+      if(_ringDistance(read, write) > maxQueued) {
+        read = (write + _ringCapacity - recoveryFrames) % _ringCapacity;
+        _ringRead.store(read, ::std::memory_order_release);
+      }
       double samples[2];
       samples[0] = _ringBuffer[read * 2 + 0];
       samples[1] = _ringBuffer[read * 2 + 1];

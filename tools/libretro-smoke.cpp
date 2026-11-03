@@ -1,5 +1,6 @@
 #include <cstdarg>
 #include <cstdint>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -156,6 +157,7 @@ int main(int argc, char** argv) {
   auto init = symbol<decltype(&retro_init)>(library, "retro_init");
   auto deinit = symbol<decltype(&retro_deinit)>(library, "retro_deinit");
   auto getSystemInfo = symbol<decltype(&retro_get_system_info)>(library, "retro_get_system_info");
+  auto getAVInfo = symbol<decltype(&retro_get_system_av_info)>(library, "retro_get_system_av_info");
   auto loadGame = symbol<decltype(&retro_load_game)>(library, "retro_load_game");
   auto unloadGame = symbol<decltype(&retro_unload_game)>(library, "retro_unload_game");
   auto run = symbol<decltype(&retro_run)>(library, "retro_run");
@@ -192,11 +194,18 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  retro_system_av_info avInfo{};
+  getAVInfo(&avInfo);
+  const auto started = std::chrono::steady_clock::now();
   for(unsigned frameNumber = 0; frameNumber < frames; frameNumber++) run();
+  const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
   bool wroteFrame = writePPM(outputPath);
   std::printf("core=%s version=%s frames=%u video=%ux%u format=%u output=%s\n",
     systemInfo.library_name, systemInfo.library_version, frames, frameWidth,
     frameHeight, (unsigned)pixelFormat, wroteFrame ? outputPath.c_str() : "none");
+  std::printf("headless_seconds=%.6f fps=%.3f nominal_fps=%.6f speed_percent=%.3f\n",
+    elapsed, elapsed > 0 ? frames / elapsed : 0.0, avInfo.timing.fps,
+    elapsed > 0 && avInfo.timing.fps > 0 ? 100.0 * frames / elapsed / avInfo.timing.fps : 0.0);
 
   unloadGame();
   deinit();

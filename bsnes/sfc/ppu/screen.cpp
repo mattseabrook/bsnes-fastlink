@@ -22,12 +22,30 @@ auto PPU::Screen::run() -> void {
   if(ppu.vcounter() == 0) return;
 
   bool hires      = ppu.io.pseudoHires || ppu.io.bgMode == 5 || ppu.io.bgMode == 6;
+  bool hdMode7 = configuration.video.hdMode7 && ppu.io.bgMode == 7
+    && !hires && !ppu.display.interlace && !ppu.io.displayDisable
+    && (ppu.io.overscan || ppu.vcounter() < 225)
+    && !(ppu.bg1.mosaic.enable && ppu.mosaic.size > 1)
+    && !(ppu.io.extbg && ppu.bg2.mosaic.enable && ppu.mosaic.size > 1);
+  // Always execute the original native sample: its color-math state and CGRAM
+  // latch are hardware-visible. HD samples only replace presentation pixels.
+  if(hdMode7) {
+    const auto previousMath = math;
+    below(false);
+    lineA[0] = ppu.lightTable[ppu.io.displayBrightness][above()];
+    runMode7HD(previousMath);
+    lineA += 2;
+    lineB += 2;
+    return;
+  }
   auto belowColor = below(hires);
   auto aboveColor = above();
 
   *lineA++ = *lineB++ = ppu.lightTable[ppu.io.displayBrightness][hires ? belowColor : aboveColor];
   *lineA++ = *lineB++ = ppu.lightTable[ppu.io.displayBrightness][aboveColor];
 }
+
+#include "mode7hd.cpp"
 
 auto PPU::Screen::below(bool hires) -> uint16 {
   if(ppu.io.displayDisable || (!ppu.io.overscan && ppu.vcounter() >= 225)) return 0;

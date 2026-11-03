@@ -12,8 +12,10 @@ struct pAction : pObject {
   auto _parentMenuBar() -> maybe<pMenuBar&>;
   auto _parentPopupMenu() -> maybe<pPopupMenu&>;
   auto _synchronize() -> void;
+  auto _nativeParentMenu() -> HMENU;
+  auto _setText(const string& text) -> void;
 
-  unsigned position = 0;
+  unsigned position = ~0u;
 };
 
 }

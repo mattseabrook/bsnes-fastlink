@@ -108,8 +108,11 @@
   #define CLOCK_REALTIME  0
 
   inline int clock_gettime(int, struct timespec* tp) {
-    static LARGE_INTEGER freq = {};
-    if(!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    static const LARGE_INTEGER freq = [] {
+      LARGE_INTEGER value;
+      QueryPerformanceFrequency(&value);
+      return value;
+    }();
     LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
     tp->tv_sec  = (time_t)(counter.QuadPart / freq.QuadPart);

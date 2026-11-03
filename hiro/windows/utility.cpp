@@ -5,7 +5,6 @@ static const uint WindowsXP    = 0x0501;
 static const uint WindowsVista = 0x0600;
 static const uint Windows7     = 0x0601;
 
-static auto Button_CustomDraw(HWND, PAINTSTRUCT&, bool, bool, bool, unsigned, const Font&, const image&, Orientation, const string&) -> void;
 
 static auto OsVersion() -> uint {
   OSVERSIONINFO versionInfo{0};
@@ -38,6 +37,30 @@ static auto CreateBitmap(image icon) -> HBITMAP {
   memory::copy(data, icon.data(), icon.size());
   ReleaseDC(nullptr, hdc);
   return bitmap;
+}
+
+// Windows owns button painting and interaction. Keep icon resources alive for
+// the lifetime of the control rather than allocating GDI objects in WM_PAINT.
+static auto Button_SetNativeState(HWND hwnd, HIMAGELIST& images, const image& icon, Orientation orientation, const string& text) -> void {
+  BUTTON_IMAGELIST native{};
+  SendMessage(hwnd, BCM_SETIMAGELIST, 0, (LPARAM)&native);
+  if(images) { ImageList_Destroy(images); images = nullptr; }
+  if(icon) {
+    images = ImageList_Create(icon.width(), icon.height(), ILC_COLOR32, 1, 0);
+    if(images) {
+      if(auto bitmap = CreateBitmap(icon)) {
+        ImageList_Add(images, bitmap, nullptr);
+        DeleteObject(bitmap);
+      }
+      native.himl = images;
+      native.margin = {4, 2, 4, 2};
+      native.uAlign = !text ? BUTTON_IMAGELIST_ALIGN_CENTER
+        : orientation == Orientation::Vertical ? BUTTON_IMAGELIST_ALIGN_TOP : BUTTON_IMAGELIST_ALIGN_LEFT;
+      SendMessage(hwnd, BCM_SETIMAGELIST, 0, (LPARAM)&native);
+    }
+  }
+  SetWindowText(hwnd, utf16_t(text));
+  InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 static auto CreateRGB(const Color& color) -> COLORREF {
@@ -250,19 +273,19 @@ static auto CALLBACK Shared_windowProc(WindowProc windowProc, HWND hwnd, UINT ms
 
     #if defined(Hiro_Button)
     if(auto button = dynamic_cast<mButton*>(object)) {
-      return button->self()->onActivate(), false;
+      if(HIWORD(wparam) == BN_CLICKED) return button->self()->onActivate(), false;
     }
     #endif
 
     #if defined(Hiro_CheckButton)
     if(auto checkButton = dynamic_cast<mCheckButton*>(object)) {
-      return checkButton->self()->onToggle(), false;
+      if(HIWORD(wparam) == BN_CLICKED) return checkButton->self()->onToggle(), false;
     }
     #endif
 
     #if defined(Hiro_CheckLabel)
     if(auto checkLabel = dynamic_cast<mCheckLabel*>(object)) {
-      return checkLabel->self()->onToggle(), false;
+      if(HIWORD(wparam) == BN_CLICKED) return checkLabel->self()->onToggle(), false;
     }
     #endif
 
@@ -284,13 +307,13 @@ static auto CALLBACK Shared_windowProc(WindowProc windowProc, HWND hwnd, UINT ms
 
     #if defined(Hiro_RadioButton)
     if(auto radioButton = dynamic_cast<mRadioButton*>(object)) {
-      return radioButton->self()->onActivate(), false;
+      if(HIWORD(wparam) == BN_CLICKED) return radioButton->self()->onActivate(), false;
     }
     #endif
 
     #if defined(Hiro_RadioLabel)
     if(auto radioLabel = dynamic_cast<mRadioLabel*>(object)) {
-      return radioLabel->self()->onActivate(), false;
+      if(HIWORD(wparam) == BN_CLICKED) return radioLabel->self()->onActivate(), false;
     }
     #endif
 

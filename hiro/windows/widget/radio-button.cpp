@@ -13,6 +13,8 @@ auto pRadioButton::construct() -> void {
 
 auto pRadioButton::destruct() -> void {
   DestroyWindow(hwnd);
+  hwnd = nullptr;
+  if(nativeImages) { ImageList_Destroy(nativeImages); nativeImages = nullptr; }
 }
 
 auto pRadioButton::minimumSize() const -> Size {
@@ -51,12 +53,10 @@ auto pRadioButton::setChecked() -> void {
 
 auto pRadioButton::setEnabled(bool enabled) -> void {
   pWidget::setEnabled(enabled);
-  _setState();
 }
 
 auto pRadioButton::setFont(const Font& font) -> void {
   pWidget::setFont(font);
-  _setState();
 }
 
 auto pRadioButton::setGroup(sGroup group) -> void {
@@ -89,7 +89,6 @@ auto pRadioButton::setText(const string& text) -> void {
 
 auto pRadioButton::setVisible(bool visible) -> void {
   pWidget::setVisible(visible);
-  _setState();
 }
 
 //
@@ -101,25 +100,16 @@ auto pRadioButton::onActivate() -> void {
 }
 
 auto pRadioButton::windowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) -> maybe<LRESULT> {
-  if(msg == WM_PAINT) {
-    PAINTSTRUCT ps;
-    BeginPaint(hwnd, &ps);
-    auto buttonState = Button_GetState(hwnd);
-    Button_CustomDraw(hwnd, ps,
-      state().bordered, state().checked, self().enabled(true), buttonState,
-      self().font(true), state().icon, state().orientation, state().text
-    );
-    EndPaint(hwnd, &ps);
-    return false;
-  }
-
+  // Native BUTTON handles painting, focus cues, Space/Enter and click dispatch.
   return pWidget::windowProc(hwnd, msg, wparam, lparam);
 }
 
 //
 
 auto pRadioButton::_setState() -> void {
-  InvalidateRect(hwnd, 0, false);
+  auto style = GetWindowLongPtr(hwnd, GWL_STYLE);
+  SetWindowLongPtr(hwnd, GWL_STYLE, state().bordered ? style & ~BS_FLAT : style | BS_FLAT);
+  Button_SetNativeState(hwnd, nativeImages, state().icon, state().orientation, state().text);
 }
 
 }
