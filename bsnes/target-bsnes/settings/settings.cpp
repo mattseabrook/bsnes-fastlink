@@ -1,36 +1,5 @@
 #include "../bsnes.hpp"
-#include "video.cpp"
-#include "audio.cpp"
-#include "input.cpp"
-#include "hotkeys.cpp"
-#include "paths.cpp"
-#include "emulator.cpp"
-#include "drivers.cpp"
 Settings settings;
-VideoSettings videoSettings;
-AudioSettings audioSettings;
-InputSettings inputSettings;
-HotkeySettings hotkeySettings;
-PathSettings pathSettings;
-EmulatorSettings emulatorSettings;
-DriverSettings driverSettings;
-namespace Instances { Instance<SettingsWindow> settingsWindow; }
-SettingsWindow& settingsWindow = Instances::settingsWindow();
-
-namespace {
-  #if defined(PLATFORM_WINDOWS)
-  constexpr auto HotkeySettingsIndex = 2;
-  constexpr auto PathSettingsIndex = 3;
-  constexpr auto EmulatorSettingsIndex = 4;
-  constexpr auto DriverSettingsIndex = 5;
-  #else
-  constexpr auto InputSettingsIndex = 2;
-  constexpr auto HotkeySettingsIndex = 3;
-  constexpr auto PathSettingsIndex = 4;
-  constexpr auto EmulatorSettingsIndex = 5;
-  constexpr auto DriverSettingsIndex = 6;
-  #endif
-}
 
 auto Settings::load() -> void {
   Markup::Node::operator=(BML::unserialize(string::read(location), " "));
@@ -39,24 +8,19 @@ auto Settings::load() -> void {
 }
 
 auto Settings::save() -> void {
+  // Active gameplay only changes live settings. Persist once gameplay stops;
+  // do not serialize, query paths, create events, or touch disk during a run.
+  if(::emulator && ::emulator->loaded() && !program.paused && !quitting)return;
   process(false);
-  file::write(location ? location : locate("settings.bml"), BML::serialize(*this, " "));
+  file::write(location ? location : locate("settings.bml"),BML::serialize(*this, " "));
 }
 
 auto Settings::process(bool load) -> void {
   if(load) {
     //initialize non-static default settings
-    #if defined(PLATFORM_WINDOWS)
     video.driver = NativeVideoDriverName;
-    #else
-    video.driver = ruby::Video::optimalDriver();
-    #endif
     audio.driver = ruby::Audio::optimalDriver();
-    #if defined(PLATFORM_WINDOWS)
     input.driver = NativeInputDriverName;
-    #else
-    input.driver = ruby::Input::safestDriver();
-    #endif
   }
 
   #define bind(type, path, name) \
@@ -131,9 +95,6 @@ auto Settings::process(bool load) -> void {
   bind(boolean, "FastLink/DisableSoftwareFilters", fastLink.disableSoftwareFilters);
   bind(boolean, "FastLink/LowLatencyInactiveYield", fastLink.lowLatencyInactiveYield);
   bind(boolean, "FastLink/SoftwareFramePacing", fastLink.softwareFramePacing);
-  #if !defined(PLATFORM_WINDOWS)
-  bind(natural, "FastLink/InputPollMicroseconds", fastLink.inputPollMicroseconds);
-  #endif
   bind(text,    "FastLink/GenericHIDMapping", fastLink.genericHIDMapping);
   bind(integer, "FastLink/MainThreadAffinity", fastLink.mainThreadAffinity);
   bind(integer, "FastLink/InputThreadAffinity", fastLink.inputThreadAffinity);
@@ -157,10 +118,10 @@ auto Settings::process(bool load) -> void {
   bind(integer, "General/Window/Y",          general.window.y);
   bind(natural, "General/Window/Width",      general.window.width);
   bind(natural, "General/Window/Height",     general.window.height);
+  bind(boolean, "General/Window/Maximized", general.window.maximized);
   bind(text,    "General/Window/Monitor",    general.window.monitor);
 
   if(load) {
-    #if defined(PLATFORM_WINDOWS)
     if(video.driver != NativeVideoDriverName) {
       video.driver = NativeVideoDriverName;
     }
@@ -172,10 +133,6 @@ auto Settings::process(bool load) -> void {
     if(fastLink.genericHIDMapping != "SNES Adapter" && fastLink.genericHIDMapping != "Standard HID") {
       fastLink.genericHIDMapping = "SNES Adapter";
     }
-    #if !defined(PLATFORM_WINDOWS)
-    if(fastLink.inputPollMicroseconds < 100) fastLink.inputPollMicroseconds = 100;
-    if(fastLink.inputPollMicroseconds > 5000) fastLink.inputPollMicroseconds = 5000;
-    #endif
     if(fastLink.disableSoftwareFilters) video.filter = "None";
     if(audio.driver == "WASAPI") {
       audio.exclusive = false;
@@ -187,14 +144,6 @@ auto Settings::process(bool load) -> void {
     if(video.shader != "None") {
       video.shader = "None";
     }
-    #else
-    if(!ruby::Video::hasDriver(video.driver)) {
-      video.driver = ruby::Video::optimalDriver();
-    }
-    if(video.driver == "Direct3D 9.0" || video.driver == "DirectDraw 7.0" || video.driver == "GDI") {
-      video.driver = ruby::Video::optimalDriver();
-    }
-    #endif
     if(!ruby::Audio::hasDriver(audio.driver)) {
       audio.driver = ruby::Audio::optimalDriver();
     }
@@ -202,7 +151,6 @@ auto Settings::process(bool load) -> void {
       audio.driver = ruby::Audio::optimalDriver();
     }
 
-    #if defined(PLATFORM_WINDOWS)
     //Older crash recovery builds disabled every driver after a video failure.
     //Recover audio/input automatically when that exact all-None state is encountered.
     if(video.driver == "None" && audio.driver == "None" && input.driver == "None" && !general.crashComponent) {
@@ -214,120 +162,7 @@ auto Settings::process(bool load) -> void {
     if(!video.driver || video.driver == "None") video.driver = NativeVideoDriverName;
     if(!input.driver || input.driver == "None") input.driver = NativeInputDriverName;
     general.nativeFileDialogs = true;
-    #endif
   }
 
   #undef bind
-}
-
-struct SettingsHome : VerticalLayout {
-  SettingsHome() {
-    setCollapsible();
-    setVisible(false);
-    image icon{Resource::Icon};
-    auto data = icon.data();
-    for(uint y : range(icon.height())) {
-      for(uint x : range(icon.width())) {
-        auto pixel = icon.read(data);
-        auto a = pixel >> 24 & 255;
-        auto r = pixel >> 16 & 255;
-        auto g = pixel >>  8 & 255;
-        auto b = pixel >>  0 & 255;
-        a = a * 0.25;
-        icon.write(data, a << 24 | r << 16 | g << 8 | b << 0);
-        data += icon.stride();
-      }
-    }
-    canvas.setIcon(icon);
-  }
-
-public:
-  Canvas canvas{this, Size{~0, ~0}};
-} settingsHome;
-
-auto SettingsWindow::create() -> void {
-  layout.setPadding(5_sx);
-  panelList.append(ListViewItem().setText("Video").setIcon(Icon::Device::Display));
-  panelList.append(ListViewItem().setText("Audio").setIcon(Icon::Device::Speaker));
-  #if !defined(PLATFORM_WINDOWS)
-  panelList.append(ListViewItem().setText("Input").setIcon(Icon::Device::Joypad));
-  #endif
-  panelList.append(ListViewItem().setText("Hotkeys").setIcon(Icon::Device::Keyboard));
-  panelList.append(ListViewItem().setText("Paths").setIcon(Icon::Emblem::Folder));
-  panelList.append(ListViewItem().setText("Emulator").setIcon(Icon::Action::Settings));
-  panelList.append(ListViewItem().setText("Drivers").setIcon(Icon::Place::Settings));
-  panelList.onChange([&] {
-    if(auto item = panelList.selected()) {
-      show(item.offset());
-    } else {
-      show(-1);
-    }
-  });
-  panelContainer.append(settingsHome, Size{~0, ~0});
-  panelContainer.append(videoSettings, Size{~0, ~0});
-  panelContainer.append(audioSettings, Size{~0, ~0});
-  #if !defined(PLATFORM_WINDOWS)
-  panelContainer.append(inputSettings, Size{~0, ~0});
-  #endif
-  panelContainer.append(hotkeySettings, Size{~0, ~0});
-  panelContainer.append(pathSettings, Size{~0, ~0});
-  panelContainer.append(emulatorSettings, Size{~0, ~0});
-  panelContainer.append(driverSettings, Size{~0, ~0});
-  statusBar.setFont(Font().setBold());
-
-  setTitle("Settings");
-  setSize({680_sx, 400_sy});
-  setAlignment({0.0, 1.0});
-  setDismissable();
-
-  onClose([&] {
-    if(inputSettings.activeMapping) inputSettings.cancelMapping();
-    if(hotkeySettings.activeMapping) hotkeySettings.cancelMapping();
-    setVisible(false);
-  });
-}
-
-auto SettingsWindow::setVisible(bool visible) -> SettingsWindow& {
-  if(visible) {
-    #if !defined(PLATFORM_WINDOWS)
-    inputSettings.refreshMappings();
-    #endif
-    hotkeySettings.refreshMappings();
-    Application::processEvents();
-  }
-  return Window::setVisible(visible), *this;
-}
-
-auto SettingsWindow::show(int index) -> void {
-  if(index == DriverSettingsIndex) {
-    driverSettings.videoDriverChanged();
-    driverSettings.audioDriverChanged();
-    driverSettings.inputDriverChanged();
-  }
-
-  settingsHome.setVisible(false);
-  videoSettings.setVisible(false);
-  audioSettings.setVisible(false);
-  #if !defined(PLATFORM_WINDOWS)
-  inputSettings.setVisible(false);
-  #endif
-  hotkeySettings.setVisible(false);
-  pathSettings.setVisible(false);
-  emulatorSettings.setVisible(false);
-  driverSettings.setVisible(false);
-  panelList.item(index).setSelected();
-  if(index ==-1) settingsHome.setVisible(true);
-  if(index == 0) videoSettings.setVisible(true);
-  if(index == 1) audioSettings.setVisible(true);
-  #if !defined(PLATFORM_WINDOWS)
-  if(index == InputSettingsIndex) inputSettings.setVisible(true);
-  #endif
-  if(index == HotkeySettingsIndex) hotkeySettings.setVisible(true);
-  if(index == PathSettingsIndex) pathSettings.setVisible(true);
-  if(index == EmulatorSettingsIndex) emulatorSettings.setVisible(true);
-  if(index == DriverSettingsIndex) driverSettings.setVisible(true);
-  panelContainer.resize();
-  setVisible();
-  setFocused();
-  panelList.setFocused();
 }

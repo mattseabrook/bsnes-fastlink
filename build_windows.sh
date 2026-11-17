@@ -151,8 +151,7 @@ setup_flags() {
     "-D_CRT_SECURE_NO_WARNINGS"
     "-D_CRT_NONSTDC_NO_WARNINGS"
     "-D_USE_MATH_DEFINES"
-    # hiro: Windows GUI backend
-    "-DHIRO_WINDOWS"
+    "-DFASTLINK_VERSIONED_BUILD"
     # SameBoy
     "-DGB_INTERNAL" "-DGB_DISABLE_DEBUGGER" "-DGB_DISABLE_CHEATS"
     "-DGB_VERSION=\"$GB_VERSION\""
@@ -161,8 +160,6 @@ setup_flags() {
     "-DAUDIO_XAUDIO2"
     "-DAUDIO_DIRECTSOUND"
     "-DAUDIO_WAVEOUT"
-    # Ruby input driver
-    "-DINPUT_WINDOWS"
   )
 
   # Base compiler flags
@@ -203,12 +200,57 @@ setup_flags() {
     "shell32.lib" "ole32.lib" "oleaut32.lib" "winmm.lib" "shlwapi.lib"
     "dxguid.lib" "dsound.lib"
     "vulkan-1.lib"
-    "opengl32.lib" "hid.lib"
+    "hid.lib"
     "comctl32.lib" "dwmapi.lib" "ws2_32.lib" "avrt.lib"
-    "uxtheme.lib" "msimg32.lib"
     "$ZLIB_DIR/lib/zlib.lib"
     "$LIBPNG_DIR/lib/libpng.lib"
   )
+}
+
+# ---------------------- Successful-build version ------------------------------
+prepare_build_version() {
+  command -v flock >/dev/null 2>&1 || die "flock is required for build numbering"
+  VERSION_STATE_DIR="$ROOT_DIR/.build-version"
+  mkdir -p "$VERSION_STATE_DIR"
+  # Serialize complete builds, including different output folders. Keep this
+  # descriptor open until compilation, linking and counter publication finish.
+  exec 9>"$VERSION_STATE_DIR/lock"
+  flock 9
+
+  local header="$ROOT_DIR/bsnes/emulator/version.hpp"
+  local major minor previous=0 year month day
+  major=$(awk '$2 == "FASTLINK_VERSION_MAJOR" { print $3 }' "$header")
+  minor=$(awk '$2 == "FASTLINK_VERSION_MINOR" { print $3 }' "$header")
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || die "Invalid base version in $header"
+  VERSION_DATE=$(TZ=America/Toronto date +%Y%m%d)
+  VERSION_COUNTER_FILE="$VERSION_STATE_DIR/$major.$minor.$VERSION_DATE.count"
+  if [[ -f "$VERSION_COUNTER_FILE" ]]; then
+    read -r previous < "$VERSION_COUNTER_FILE"
+    [[ "$previous" =~ ^[0-9]+$ && ${#previous} -le 5 ]] || die "Invalid build counter: $VERSION_COUNTER_FILE"
+    previous=$((10#$previous))
+  fi
+  VERSION_BUILD=$((previous + 1))
+  (( VERSION_BUILD <= 65535 )) || die "Daily build count exceeds Windows version-resource capacity"
+  VERSION_STRING="$major.$minor.$VERSION_DATE.$VERSION_BUILD"
+
+  # Windows fixed version fields are 16-bit. Pack the date for those numeric
+  # fields; FileVersion/ProductVersion strings contain the full public version.
+  year=$((10#${VERSION_DATE:0:4}))
+  month=$((10#${VERSION_DATE:4:2}))
+  day=$((10#${VERSION_DATE:6:2}))
+  (( year >= 2000 && year <= 2127 )) || die "Build date is outside the packed Windows version range"
+  local date_word=$(((year - 2000) * 512 + month * 32 + day))
+  cat > "$VERSION_STATE_DIR/pending.hpp" <<EOF
+#define FASTLINK_VERSION_STRING "$VERSION_STRING"
+#define FASTLINK_VERSION_DATE_WORD $date_word
+#define FASTLINK_VERSION_BUILD $VERSION_BUILD
+EOF
+  info "Building version $VERSION_STRING"
+}
+
+commit_build_version() {
+  printf '%s\n' "$VERSION_BUILD" > "$VERSION_COUNTER_FILE.tmp"
+  mv -f "$VERSION_COUNTER_FILE.tmp" "$VERSION_COUNTER_FILE"
 }
 
 # ---------------------- Resource compilation ----------------------------------
@@ -219,11 +261,10 @@ compile_resources() {
   local rc_dir="bsnes/target-bsnes/resource"
   if [[ -f "$rc_dir/bsnes.rc" ]]; then
     info "Compiling bsnes.rc..."
-    if command -v llvm-rc >/dev/null 2>&1; then
-      pushd "$rc_dir" > /dev/null
-      llvm-rc /nologo bsnes.rc /fo "../../../$objdir/bsnes.res" 2>/dev/null || true
-      popd > /dev/null
-    fi
+    command -v llvm-rc >/dev/null 2>&1 || die "llvm-rc is required for version/icon/manifest resources"
+    local resource_out
+    resource_out="$(cd "$objdir" && pwd)/bsnes.res"
+    (cd "$rc_dir" && llvm-rc /nologo /d FASTLINK_VERSIONED_BUILD bsnes.rc /fo "$resource_out")
   fi
 }
 
@@ -269,9 +310,6 @@ compile_objects() {
 
   local B="bsnes"
 
-  # --- Hiro (Windows GUI) ---
-  echo "hiro/hiro.cpp|$objdir/hiro-windows.obj|cpp" >> "$manifest"
-
   # --- Ruby (hardware drivers) ---
   echo "ruby/ruby.cpp|$objdir/ruby.obj|cpp" >> "$manifest"
 
@@ -315,9 +353,8 @@ compile_objects() {
   echo "$B/target-bsnes/fastlink/ram-trace.cpp|$objdir/target-fastlink-ramtrace.obj|cpp" >> "$manifest"
   echo "$B/target-bsnes/program/program.cpp|$objdir/target-program.obj|cpp" >> "$manifest"
   echo "$B/target-bsnes/input/input.cpp|$objdir/target-input.obj|cpp" >> "$manifest"
-  echo "$B/target-bsnes/presentation/presentation.cpp|$objdir/target-presentation.obj|cpp" >> "$manifest"
+  echo "$B/target-bsnes/native-ui.cpp|$objdir/target-native-ui.obj|cpp" >> "$manifest"
   echo "$B/target-bsnes/settings/settings.cpp|$objdir/target-settings.obj|cpp" >> "$manifest"
-  echo "$B/target-bsnes/tools/tools.cpp|$objdir/target-tools.obj|cpp" >> "$manifest"
   echo "$B/target-bsnes/resource/resource.cpp|$objdir/target-resource.obj|cpp" >> "$manifest"
 
   local count
@@ -329,8 +366,7 @@ compile_objects() {
   export CFLAGS_CPP="${CFLAGS[*]}"
   export CFLAGS_C_STR="${CFLAGS_C[*]}"
 
-  if ! cat "$manifest" \
-    | xargs -P "$JOBS" -n 1 sh -c '
+  if ! xargs -d '\n' -P "$JOBS" -n 1 bash -c '
         IFS="|" read -r src obj lang <<< "$0"
         log="$obj.log"
         if [[ "$lang" == "c" ]]; then
@@ -344,14 +380,11 @@ compile_objects() {
           exit 1
         fi
         rm -f "$log"
-      '; then
+      ' < "$manifest"; then
     die "Compilation failed"
   fi
 
-  local obj_count
-  obj_count=$(find "$objdir" -name "*.obj" 2>/dev/null | wc -l)
-  [[ $obj_count -gt 0 ]] || die "No object files produced"
-  ok "Compiled $obj_count object files"
+  ok "Compiled $count object files"
 
   # Compile Windows resources
   compile_resources
@@ -365,10 +398,19 @@ link_exe() {
   local outdir="$BUILD_DIR"
   mkdir -p "$outdir"
 
-  local objs=("$objdir"/*.obj)
-  [[ -f "${objs[0]}" ]] || die "No object files in $objdir"
+  # Link this build's manifest only. Old objects left in an output directory
+  # must not silently reintroduce removed code or alternate implementations.
+  local objs=()
+  local source object language
+  while IFS='|' read -r source object language; do
+    [[ -f "$object" ]] || die "Missing object: $object"
+    objs+=("$object")
+  done < "$BUILD_DIR/compile_manifest.txt"
+  [[ ${#objs[@]} -gt 0 ]] || die "No objects in compile manifest"
 
   local out="$outdir/bsnes.exe"
+  local pending="$outdir/bsnes.pending.exe"
+  rm -f "$pending"
 
   info "Linking $(basename "$out")..."
 
@@ -386,12 +428,14 @@ link_exe() {
     /subsystem:windows \
     /entry:mainCRTStartup \
     /incremental:no \
-    /out:"$out" \
+    /out:"$pending" \
     "${LINK_LIBS[@]}" \
     /NODEFAULTLIB:msvcrt.lib \
     /errorlimit:0
 
-  ok "Built: $out ($(du -h "$out" | cut -f1))"
+  mv -f "$pending" "$out"
+  commit_build_version
+  ok "Built: $out version $VERSION_STRING ($(du -h "$out" | cut -f1))"
 
   if [[ -n "$MNT_COPY_DIR" ]]; then
     mkdir -p "$MNT_COPY_DIR" 2>/dev/null || true
@@ -408,7 +452,7 @@ clean() {
   banner "Cleaning"
   # Keep tracked support files in build_win/; only remove generated artifacts.
   rm -rf "$BUILD_DIR/obj"
-  rm -f "$BUILD_DIR/bsnes.exe" "$BUILD_DIR/compile_manifest.txt"
+  rm -f "$BUILD_DIR/bsnes.exe" "$BUILD_DIR/bsnes.pending.exe" "$BUILD_DIR/compile_manifest.txt"
   rm -f "$BUILD_DIR"/*.log
   ok "Clean complete"
 }
@@ -473,6 +517,7 @@ main() {
   info "Vulkan libs: $VULKAN_LIB_DIR"
 
   # Ensure generated shim sources exist even after a clean.
+  prepare_build_version
   ensure_build_support_files
 
   # Setup compiler/linker config

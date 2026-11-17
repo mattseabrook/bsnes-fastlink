@@ -1,4 +1,5 @@
 #pragma once
+#include "version.hpp"
 
 #include <libco/libco.h>
 
@@ -29,7 +30,7 @@ using namespace nall;
 
 namespace Emulator {
   static const string Name      = "bsnes-fastlink";
-  static const string Version   = "115";
+  static const string Version   = FASTLINK_VERSION_STRING;
   static const string Copyright = "bsnes team";
   static const string License   = "GPLv3 or later";
   static const string Website   = "https://github.com/bsnes-emu/bsnes/";

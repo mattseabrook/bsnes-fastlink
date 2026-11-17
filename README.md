@@ -29,7 +29,7 @@ around the low-latency path:
   - Added selectable Vulkan present behavior (`Immediate`, `Mailbox`, `FIFO`)
     and configurable swapchain image count for queue-depth control.
   - Added the native `Win32 Raw Input` backend with a dedicated high-priority
-    input thread, atomic keyboard/controller state, and RetroUSB controller
+    input thread, atomic controller state, and RetroUSB controller
     mapping.
   - Added the FastLink RAM Trace localhost HTTP service on `127.0.0.1:9000`,
     serving 128 KiB WRAM snapshots with CORS headers for the Spectra prototype.
@@ -123,7 +123,7 @@ Standard Features
   - Just-in-time input polling for minimal input latency
   - Vulkan-focused low-latency video output on Windows
   - Shared-mode WASAPI audio path for low-latency playback while other programs keep audio access
-  - Low-latency Win32 Raw Input path
+  - Controller-only Win32 Raw Input: USB HID joystick/gamepad collections; no keyboard, mouse, hotkey polling, or legacy mapping worker
   - Selectable unknown-device HID mapping via `FastLink/GenericHIDMapping`
   - Localhost RAM Trace HTTP service for external practice tooling
   - Periodic auto-saving of game saves

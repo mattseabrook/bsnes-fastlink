@@ -103,6 +103,9 @@ auto FastLinkRAMTraceService::start() -> void {
   }
 
   fastLinkDebug("RAMTrace::start port=%u", Port);
+  // A failed startup leaves a finished but joinable thread. Reap it before
+  // replacing std::thread, whose assignment would otherwise terminate us.
+  if(_thread.joinable()) _thread.join();
   clearSnapshot();
   _thread = std::thread([this] { threadMain(); });
 #endif
@@ -272,6 +275,10 @@ auto FastLinkRAMTraceService::threadMain() -> void {
 
     request.fill(0);
     auto requestSize = receiveRequest(client, request.data(), (uint32_t)request.size());
+    if(!requestSize) {
+      closeSocket(client);
+      continue;
+    }
     bool isOptions = requestSize >= 7 && std::memcmp(request.data(), "OPTIONS", 7) == 0;
     bool traceRequest = requestTraceCount++ < 40;
     if(traceRequest) fastLinkDebug("RAMTrace::thread request size=%u options=%d", requestSize, isOptions);

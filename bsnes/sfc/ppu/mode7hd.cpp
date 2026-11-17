@@ -26,25 +26,30 @@ auto PPU::Screen::runMode7HD(const Math& previousMath) -> void {
 
   // Use the same native window decisions for each subpixel. Sprites, color
   // windows and non-Mode-7 layers keep their original pixel boundaries.
-  auto windowAllows = [&](const auto& layer, bool above) -> bool {
-    const auto& window = ppu.window.io;
-    bool one = x >= window.oneLeft && x <= window.oneRight;
-    bool two = x >= window.twoLeft && x <= window.twoRight;
-    bool masked = ppu.window.test(layer.oneEnable, one ^ layer.oneInvert,
+  const auto& window = ppu.window.io;
+  const bool one = x >= window.oneLeft && x <= window.oneRight;
+  const bool two = x >= window.twoLeft && x <= window.twoRight;
+  auto windowMasked = [&](const auto& layer) -> bool {
+    return ppu.window.test(layer.oneEnable, one ^ layer.oneInvert,
       layer.twoEnable, two ^ layer.twoInvert, layer.mask);
-    return !masked || !(above ? layer.aboveEnable : layer.belowEnable);
   };
-  const bool bg1Above = ppu.bg1.io.aboveEnable && windowAllows(ppu.window.io.bg1, true);
-  const bool bg1Below = ppu.bg1.io.belowEnable && windowAllows(ppu.window.io.bg1, false);
-  const bool bg2Above = ppu.bg2.io.aboveEnable && windowAllows(ppu.window.io.bg2, true);
-  const bool bg2Below = ppu.bg2.io.belowEnable && windowAllows(ppu.window.io.bg2, false);
+  const bool bg1Masked = windowMasked(window.bg1);
+  const bool bg2Masked = ppu.io.extbg && windowMasked(window.bg2);
+  const bool bg1Above = ppu.bg1.io.aboveEnable && !(bg1Masked && window.bg1.aboveEnable);
+  const bool bg1Below = ppu.bg1.io.belowEnable && !(bg1Masked && window.bg1.belowEnable);
+  const bool bg2Above = ppu.bg2.io.aboveEnable && !(bg2Masked && window.bg2.aboveEnable);
+  const bool bg2Below = ppu.bg2.io.belowEnable && !(bg2Masked && window.bg2.belowEnable);
+  const int baseX = (originX + a * nativeX) * 2;
+  const int baseY = (originY + c * nativeX) * 2;
+  const int stepXX = a * flipX, stepXY = b * flipY;
+  const int stepYX = c * flipX, stepYY = d * flipY;
 
   for(int sy = 0; sy < 2; sy++) {
     auto target = sy ? lineB : lineA;
     for(int sx = 0; sx < 2; sx++) {
       if(sx == 0 && sy == 0) continue;  // reuse the hardware sample
-      const int pixelX = ((originX + a * nativeX) * 2 + a * flipX * sx + b * flipY * sy) >> 9;
-      const int pixelY = ((originY + c * nativeX) * 2 + c * flipX * sx + d * flipY * sy) >> 9;
+      const int pixelX = (baseX + stepXX * sx + stepXY * sy) >> 9;
+      const int pixelY = (baseY + stepYX * sx + stepYY * sy) >> 9;
       const bool outside = (pixelX | pixelY) & ~1023;
       const uint tileAddress = ((pixelY >> 3 & 127) << 7) | (pixelX >> 3 & 127);
       const uint paletteAddress = ((pixelY & 7) << 3) | (pixelX & 7);

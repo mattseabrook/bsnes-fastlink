@@ -134,14 +134,8 @@ struct AudioWASAPI : AudioDriver {
       return;
     }
 
-    uint32_t quantum = (uint32_t)(((uint64_t)self.frequency * self.devicePeriod + 9'999'999) / 10'000'000);
-    if(quantum == 0) quantum = self.bufferSize / 8;
-    if(quantum < 16u) quantum = 16u;
-    if(self.bufferSize && quantum > self.bufferSize) quantum = self.bufferSize;
-
-    uint32_t queueLimit = max(64u, quantum * 2);
-    if(self.bufferSize && queueLimit > self.bufferSize) queueLimit = self.bufferSize;
-    if(queueLimit > 65535u) queueLimit = 65535u;
+    const uint32_t quantum = self.outputQuantum;
+    const uint32_t queueLimit = self.outputQueueLimit;
 
     // Pace against one device period worth of audio instead of the entire endpoint buffer.
     // Shared-mode WASAPI can expose a large buffer, and waiting to fill it first creates a fixed startup delay.
@@ -164,7 +158,7 @@ struct AudioWASAPI : AudioDriver {
     self.queue.count++;
 
     if(self.queue.count >= quantum) {
-      if(waitForAudio(self.blocking ? INFINITE : 0) == WAIT_OBJECT_0 || !self.blocking) {
+      if(!self.blocking || waitForAudio(INFINITE) == WAIT_OBJECT_0) {
         write();
       }
     }
@@ -363,6 +357,15 @@ private:
 
     self.channels = waveFormat->nChannels;
     self.frequency = waveFormat->nSamplesPerSec;
+    // Endpoint-dependent arithmetic belongs to device setup, not to each of
+    // the tens of thousands of output samples processed every second.
+    self.outputQuantum = (uint32_t)(((uint64_t)self.frequency * self.devicePeriod + 9'999'999) / 10'000'000);
+    if(!self.outputQuantum) self.outputQuantum = self.bufferSize / 8;
+    self.outputQuantum = max(16u, self.outputQuantum);
+    if(self.bufferSize) self.outputQuantum = min(self.outputQuantum, self.bufferSize);
+    self.outputQueueLimit = max(64u, self.outputQuantum * 2);
+    if(self.bufferSize) self.outputQueueLimit = min(self.outputQueueLimit, self.bufferSize);
+    self.outputQueueLimit = min(self.outputQueueLimit, 65535u);
     self.mode = waveFormat->wFormatTag;
     if(waveFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE && waveFormat->cbSize >= 22) {
       auto extensible = (WAVEFORMATEXTENSIBLE*)waveFormat;
@@ -495,5 +498,7 @@ private:
   HANDLE taskHandle = nullptr;
   REFERENCE_TIME devicePeriod = 0;
   uint32_t bufferSize = 0;  //in frames
+  uint32_t outputQuantum = 16;
+  uint32_t outputQueueLimit = 64;
   bool recovering = false;
 };

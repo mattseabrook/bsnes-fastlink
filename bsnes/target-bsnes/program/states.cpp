@@ -126,8 +126,8 @@ auto Program::saveState(string filename) -> bool {
     output.append(location, saveState.data(), saveState.size());
   }
 
-  if(filename.beginsWith("Quick/")) presentation.updateStateMenus();
-  stateManager.stateEvent(filename);
+  nativeMenus();
+
   return showMessage({"Saved [", prefix, "]"}), true;
 }
 
@@ -186,8 +186,8 @@ auto Program::removeState(string filename) -> bool {
   }
 
   if(result) {
-    presentation.updateStateMenus();
-    stateManager.stateEvent(filename);
+    nativeMenus();
+
   }
   return result;
 }
@@ -226,7 +226,7 @@ auto Program::renameState(string from_, string to_) -> bool {
   }
 
   if(result) {
-    stateManager.stateEvent(to_);
+
   }
   return result;
 }

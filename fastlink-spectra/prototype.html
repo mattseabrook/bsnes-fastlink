@@ -81,7 +81,16 @@
         const PARTICLE_COLORS = REGION_HUES.map(hue => `hsl(${hue}, 80%, 70%)`);
 
         const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d', { alpha: false });
+        const gl = canvas.getContext('webgl2', {
+            alpha: false, antialias: false, depth: false, stencil: false,
+            powerPreference: 'high-performance', failIfMajorPerformanceCaveat: true
+        });
+        if (!gl) throw new Error('Spectra requires accelerated WebGL2.');
+        // Keep the browser's original shadow blur and text rasterization.
+        const effectsCanvas = document.createElement('canvas');
+        effectsCanvas.style.cssText = 'position:fixed;inset:0;pointer-events:none';
+        canvas.after(effectsCanvas);
+        const ctx = effectsCanvas.getContext('2d');
         const menu = document.getElementById('contextMenu');
         const viewLabel = document.getElementById('viewLabel');
         const changeCount = document.getElementById('changeCount');
@@ -93,11 +102,7 @@
         const saveState = () => localStorage.setItem('fastlink_state2', JSON.stringify(state));
 
         const unit = new Float32Array(256);
-        const flash = new Float32Array(256);
-        for (let i = 0; i < 256; i++) {
-            unit[i] = i / 255;
-            flash[i] = unit[i] * unit[i];
-        }
+        for (let i = 0; i < 256; i++) unit[i] = i / 255;
 
         let currentSize = MEM_SIZES.wram;
         let currentBuffer = new Uint8Array(currentSize);
@@ -109,34 +114,102 @@
         let colorCache = new Uint32Array(0);
         let frameColors = new Uint32Array(currentSize);
         let colorsDirty = true;
-        let imageData = null;
-        let pixels = null;
+        let program, vao, rectBuffer, colorBuffer, ageBuffer, offsetBuffer;
+        let rasterFramebuffer, rasterTexture, viewportUniform, effectUniform;
+        let waveOffsets = new Int32Array(currentSize * 2);
+        let uploadDirty = true;
         let frameCount = 0;
         let needsDraw = true;
+        let rasterDirty = true;
         let renderQueued = false;
         let resizeQueued = false;
         let lastChanges = '';
         let lastHotspots = '';
 
-        let tileLayout = {
-            tilesX: 1,
-            tilesY: 1,
-            tileW: 1,
-            tileH: 1,
-            colX: new Int32Array(1),
-            colW: new Int32Array(1),
-            rowY: new Int32Array(1),
-            rowH: new Int32Array(1),
-        };
+        let tileLayout;
 
         const particles = Array.from({ length: MAX_PARTICLES }, () => ({
             x: 0, y: 0, vx: 0, vy: 0, life: 0, decay: 0, size: 0, gravity: 0.15, color: '#fff'
         }));
         let particleCount = 0;
 
-        function requestDraw() {
+        function initializeGL() {
+            program = gl.createProgram();
+            const sources = [
+                [gl.VERTEX_SHADER, `#version 300 es
+                    precision highp float;
+                    precision highp int;
+                    layout(location=0) in ivec4 rect;
+                    layout(location=1) in uint color;
+                    layout(location=2) in uint age;
+                    layout(location=3) in ivec2 waveOffset;
+                    uniform vec2 viewport;
+                    uniform int effect;
+                    flat out vec4 tileColor;
+                    void main() {
+                        ivec2 corner = ivec2(gl_VertexID & 1, gl_VertexID >> 1);
+                        int glow = effect == 1 && age > 127u ? 1 : 0;
+                        ivec2 pixel = rect.xy - ivec2(glow)
+                            + corner * (rect.zw + ivec2(glow * 2));
+                        if (effect == 3) pixel += waveOffset;
+                        vec2 position = vec2(pixel) / viewport * 2.0 - 1.0;
+                        gl_Position = color == 0xFF0a0a0fu ? vec4(2, 2, 0, 1)
+                            : vec4(position.x, -position.y, 0, 1);
+                        tileColor = vec4(float(color & 255u), float((color >> 8) & 255u),
+                            float((color >> 16) & 255u), 255.0) / 255.0;
+                    }`],
+                [gl.FRAGMENT_SHADER, `#version 300 es
+                    precision highp float;
+                    flat in vec4 tileColor;
+                    out vec4 color;
+                    void main() { color = tileColor; }`]
+            ];
+            for (const [type, source] of sources) {
+                const shader = gl.createShader(type);
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                gl.attachShader(program, shader);
+                gl.deleteShader(shader);
+            }
+            gl.linkProgram(program);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+                throw new Error(gl.getProgramInfoLog(program));
+            gl.useProgram(program);
+            viewportUniform = gl.getUniformLocation(program, 'viewport');
+            effectUniform = gl.getUniformLocation(program, 'effect');
+            vao = gl.createVertexArray();
+            gl.bindVertexArray(vao);
+            const buffers = [];
+            for (const [index, size, type] of [[0, 4, gl.INT], [1, 1, gl.UNSIGNED_INT],
+                [2, 1, gl.UNSIGNED_BYTE], [3, 2, gl.INT]]) {
+                const buffer = gl.createBuffer();
+                buffers.push(buffer);
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                gl.enableVertexAttribArray(index);
+                gl.vertexAttribIPointer(index, size, type, 0, 0);
+                gl.vertexAttribDivisor(index, 1);
+            }
+            [rectBuffer, colorBuffer, ageBuffer, offsetBuffer] = buffers;
+            rasterFramebuffer = gl.createFramebuffer();
+            rasterTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, rasterTexture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.disable(gl.DITHER);
+            gl.clearColor(15 / 255, 10 / 255, 10 / 255, 1);
+        }
+
+        canvas.addEventListener('webglcontextlost', event => event.preventDefault());
+        canvas.addEventListener('webglcontextrestored', () => {
+            initializeGL();
+            resize(true);
+        });
+        initializeGL();
+
+        function requestDraw(raster = true) {
             needsDraw = true;
-            if (!renderQueued && !document.hidden) {
+            if (raster) rasterDirty = true;
+            if (!renderQueued && !document.hidden && !gl.isContextLost()) {
                 renderQueued = true;
                 requestAnimationFrame(render);
             }
@@ -149,10 +222,6 @@
             if (address < 0x4000) return 3;
             if (address < 0x8000) return 4;
             return 5;
-        }
-
-        function getRegionHue(address) {
-            return REGION_HUES[regionBand[address]];
         }
 
         function rebuildRegionBands() {
@@ -209,13 +278,17 @@
 
         function getColor(value, address, age, heat) {
             if (value === 0 && age <= 0) return BACKGROUND;
+            if (age <= 0) {
+                if (state.colorMode === 0) return colorCache[(regionBand[address] << 8) | value];
+                if (state.colorMode === 2) return colorCache[((heat * 255) | 0) << 8 | value];
+                return colorCache[value];
+            }
 
-            const baseL = 0.15 + (value / 255) * 0.45;
-            let h, s = 0.8, l = baseL;
+            let h, s = 0.8, l = 0.15 + (value / 255) * 0.45;
 
             switch (state.colorMode) {
                 case 0:
-                    h = getRegionHue(address);
+                    h = REGION_HUES[regionBand[address]];
                     break;
                 case 1:
                     h = 280;
@@ -229,17 +302,11 @@
                     break;
             }
 
-            if (age > 0) {
-                const f = age * age;
-                l = Math.min(0.9, l + f * 0.5);
-                s = Math.max(0.3, s - f * 0.3);
-                h = h + (60 - h) * f * 0.5;
-                return hsl2rgb32(h, s, l, f * 150);
-            }
-
-            if (state.colorMode === 0) return colorCache[(regionBand[address] << 8) | value];
-            if (state.colorMode === 2) return colorCache[((heat * 255) | 0) << 8 | value];
-            return colorCache[value];
+            const f = age * age;
+            l = Math.min(0.9, l + f * 0.5);
+            s = Math.max(0.3, s - f * 0.3);
+            h = h + (60 - h) * f * 0.5;
+            return hsl2rgb32(h, s, l, f * 150);
         }
 
         function resizeMemory(size, data = null) {
@@ -257,11 +324,15 @@
             requestDraw();
         }
 
-        function resize() {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-            imageData = ctx.createImageData(canvas.width, canvas.height);
-            pixels = new Uint32Array(imageData.data.buffer);
+        function resize(force = false) {
+            if (!force && tileLayout && canvas.width === window.innerWidth && canvas.height === window.innerHeight) return;
+            canvas.width = effectsCanvas.width = window.innerWidth;
+            canvas.height = effectsCanvas.height = window.innerHeight;
+            gl.bindTexture(gl.TEXTURE_2D, rasterTexture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, Math.max(1, canvas.width),
+                Math.max(1, canvas.height), 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, rasterFramebuffer);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, rasterTexture, 0);
             updateLayout();
             requestDraw();
         }
@@ -298,8 +369,23 @@
                 drawRowH[row] = ((row + 1) * tileH | 0) - drawRowY[row];
             }
 
-            tileLayout = { tilesX, tilesY, tileW, tileH, colX, colW, rowY, rowH,
-                drawColX, drawColW, drawRowY, drawRowH };
+            tileLayout = { tilesX, colX, colW, rowY, rowH };
+            const rects = new Int32Array(currentSize * 4);
+            for (let i = 0, col = 0, row = 0; i < currentSize; i++, col++) {
+                if (col === tilesX) { col = 0; row++; }
+                rects[i * 4] = drawColX[col];
+                rects[i * 4 + 1] = drawRowY[row];
+                rects[i * 4 + 2] = drawColW[col];
+                rects[i * 4 + 3] = drawRowH[row];
+            }
+            waveOffsets = new Int32Array(currentSize * 2);
+            for (const [buffer, data, usage] of [[rectBuffer, rects, gl.STATIC_DRAW],
+                [colorBuffer, frameColors, gl.DYNAMIC_DRAW], [ageBuffer, changeAge, gl.DYNAMIC_DRAW],
+                [offsetBuffer, waveOffsets, gl.DYNAMIC_DRAW]]) {
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                gl.bufferData(gl.ARRAY_BUFFER, data, usage);
+            }
+            uploadDirty = true;
         }
 
         function spawnParticles(x, y, color, count = 3) {
@@ -348,7 +434,6 @@
         }
 
         function processChanges(newData) {
-            colorsDirty = true;
             let changes = 0;
             let hotspots = 0;
             const particleMode = state.effectMode === 2;
@@ -357,13 +442,15 @@
             for (let i = 0; i < currentSize; i++) {
                 const newValue = newData[i];
                 const oldValue = previousBuffer[i];
+                const oldAge = changeAge[i];
+                const oldHeat = heatmap[i];
 
                 if (newValue !== oldValue) {
                     changes++;
                     changeAge[i] = 255;
                     heatmap[i] = Math.min(255, heatmap[i] + HEAT_GAIN);
 
-                    if (particleMode && Math.abs(newValue - oldValue) > 20) {
+                    if (particleMode && particleCount < MAX_PARTICLES && Math.abs(newValue - oldValue) > 20) {
                         const col = i % tilesX;
                         const row = (i / tilesX) | 0;
                         spawnParticles(
@@ -380,7 +467,12 @@
 
                 if (heatmap[i] > HOTSPOT_THRESHOLD) hotspots++;
                 previousBuffer[i] = newValue;
+                if (colorsDirty || newValue !== oldValue || oldAge !== changeAge[i]
+                    || (state.colorMode === 2 && oldHeat !== heatmap[i]))
+                    frameColors[i] = getColor(newValue, i, unit[changeAge[i]], unit[heatmap[i]]);
             }
+            colorsDirty = false;
+            uploadDirty = true;
 
             const changesText = changes.toLocaleString();
             const hotspotsText = hotspots.toLocaleString();
@@ -406,53 +498,49 @@
         }
 
         function draw() {
-            if (!pixels) return;
-
-            const w = canvas.width;
-            const h = canvas.height;
-            const { tilesX, drawColX, drawColW, drawRowY, drawRowH } = tileLayout;
-            const useWave = state.effectMode === 3;
-            const glowMode = state.effectMode === 1;
-            const waveTime = frameCount * 0.05;
-
-            pixels.fill(BACKGROUND);
-
-            if (colorsDirty) {
-                for (let i = 0; i < currentSize; i++)
-                    frameColors[i] = getColor(currentBuffer[i], i, unit[changeAge[i]], unit[heatmap[i]]);
-                colorsDirty = false;
-            }
-
-            for (let i = 0, col = 0, row = 0; i < currentSize; i++, col++) {
-                if (col === tilesX) { col = 0; row++; }
-                const ageByte = changeAge[i];
-                const age = unit[ageByte];
-                const color = frameColors[i];
-                if (color === BACKGROUND) continue;
-
-                let tx = drawColX[col];
-                let ty = drawRowY[row];
-
-                if (useWave && ageByte > 0) {
-                    tx += Math.sin(waveTime + i * 0.01) * age * 3 | 0;
-                    ty += Math.cos(waveTime + i * 0.01) * age * 2 | 0;
+            if (gl.isContextLost() || !canvas.width || !canvas.height) return;
+            const w = canvas.width, h = canvas.height;
+            if (rasterDirty || state.effectMode === 3) {
+                if (colorsDirty) {
+                    for (let i = 0; i < currentSize; i++)
+                        frameColors[i] = getColor(currentBuffer[i], i, unit[changeAge[i]], unit[heatmap[i]]);
+                    colorsDirty = false;
+                    uploadDirty = true;
                 }
-
-                const tw = drawColW[col];
-                const th = drawRowH[row];
-                const glow = glowMode && ageByte > 127 ? 1 : 0;
-
-                for (let py = ty - glow; py < ty + th + glow && py < h; py++) {
-                    if (py < 0) continue;
-                    const rowOffset = py * w;
-                    for (let px = tx - glow; px < tx + tw + glow && px < w; px++) {
-                        if (px < 0) continue;
-                        pixels[rowOffset + px] = color;
+                if (uploadDirty) {
+                    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+                    gl.bufferSubData(gl.ARRAY_BUFFER, 0, frameColors);
+                    gl.bindBuffer(gl.ARRAY_BUFFER, ageBuffer);
+                    gl.bufferSubData(gl.ARRAY_BUFFER, 0, changeAge);
+                    uploadDirty = false;
+                }
+                if (state.effectMode === 3) {
+                    const time = frameCount * 0.05;
+                    for (let i = 0; i < currentSize; i++) {
+                        const age = unit[changeAge[i]];
+                        // Preserve JavaScript's original trig and integer truncation.
+                        if (age > 0) {
+                            waveOffsets[i * 2] = Math.sin(time + i * 0.01) * age * 3 | 0;
+                            waveOffsets[i * 2 + 1] = Math.cos(time + i * 0.01) * age * 2 | 0;
+                        } else {
+                            waveOffsets[i * 2] = waveOffsets[i * 2 + 1] = 0;
+                        }
                     }
+                    gl.bindBuffer(gl.ARRAY_BUFFER, offsetBuffer);
+                    gl.bufferSubData(gl.ARRAY_BUFFER, 0, waveOffsets);
                 }
+                gl.bindFramebuffer(gl.FRAMEBUFFER, rasterFramebuffer);
+                gl.viewport(0, 0, w, h);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+                gl.uniform2f(viewportUniform, w, h);
+                gl.uniform1i(effectUniform, state.effectMode);
+                gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, currentSize);
+                rasterDirty = false;
             }
-
-            ctx.putImageData(imageData, 0, 0);
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, rasterFramebuffer);
+            gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+            gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+            ctx.clearRect(0, 0, w, h);
             if (state.effectMode === 2 && particleCount > 0) drawParticles();
             frameCount++;
             needsDraw = false;
@@ -462,7 +550,7 @@
             renderQueued = false;
             if (document.hidden) return;
             if (needsDraw || (state.effectMode === 2 && particleCount > 0)) draw();
-            if (state.effectMode === 2 && particleCount > 0) requestDraw();
+            if (state.effectMode === 2 && particleCount > 0) requestDraw(false);
         }
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) requestDraw();
@@ -559,6 +647,7 @@
                 const li = document.createElement('li');
                 li.textContent = (state[key] === index ? '● ' : '○ ') + option;
                 li.onclick = () => {
+                    if (state[key] === index) return;
                     state[key] = index;
                     saveState();
                     if (labels) viewLabel.textContent = labels[index];

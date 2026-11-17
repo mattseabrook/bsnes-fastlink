@@ -12,7 +12,6 @@ ifeq ($(ruby),)
   ifeq ($(platform),windows)
     ruby += video.vulkan
     ruby += audio.asio audio.wasapi audio.xaudio2 audio.directsound audio.waveout
-    ruby += input.windows
   else ifeq ($(platform),macos)
     ruby += video.cgl
     ruby += audio.openal

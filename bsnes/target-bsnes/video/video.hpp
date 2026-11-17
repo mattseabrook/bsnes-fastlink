@@ -77,15 +77,13 @@ struct NativeVideoManager {
 
   auto focused() -> bool;
   auto clear() -> void;
-  auto size() -> Size;
+  auto size() -> Size { return _lastSize; }
   auto acquire(uint width, uint height) -> Acquire;
-  auto release() -> void;
   auto output(uint width = 0, uint height = 0) -> void;
   auto prepare() -> bool;
+  auto captureTiming(bool enabled) -> void;
+  auto takePresentTiming() -> uint64_t;
   auto poll() -> void;
-
-  auto onUpdate(const function<void (uint, uint)>& callback) -> void;
-  auto doUpdate(uint width, uint height) -> void;
 
 private:
   auto initialize() -> bool;
@@ -100,12 +98,12 @@ private:
   uintptr _context = 0;
   bool _blocking = false;
   bool _flush = false;
+  bool _captureTiming = false;
   string _presentMode = "Mailbox";
   uint _swapchainImages = 2;
   string _format = "ARGB24";
   string _shader = "None";
   Size _lastSize = {};
-  function<void (uint, uint)> _update;
   unique_pointer<NativeVideoImplementation> _impl;
 };
 

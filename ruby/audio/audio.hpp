@@ -116,12 +116,15 @@ protected:
   //audio worker thread (fastlink)
   static constexpr uint _ringCapacity = 8192;  //samples (per-channel pairs)
   double _ringBuffer[_ringCapacity * 2] = {};   //interleaved stereo
-  ::std::atomic<uint> _ringRead{0};
-  ::std::atomic<uint> _ringWrite{0};
+  alignas(64) ::std::atomic<uint> _ringRead{0};
+  alignas(64) ::std::atomic<uint> _ringWrite{0};
+  alignas(64) ::std::atomic<uint> _workerWakeFrames{1};
+  ::std::atomic<bool> _workerWaiting{false};
   ::std::thread _workerThread;
   ::std::mutex _workerMutex;
   ::std::condition_variable _workerCV;
   ::std::atomic<bool> _workerRunning{false};
+  ::std::atomic<double> _workerLevel{0.5};
 
   auto _ringDistance(uint read, uint write) -> uint;
   auto _ringPush(const double samples[], uint channels) -> void;

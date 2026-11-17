@@ -132,6 +132,7 @@ auto Audio::clear() -> void {
 }
 
 auto Audio::level() -> double {
+  if(_workerRunning.load(::std::memory_order_acquire))return _workerLevel.load(::std::memory_order_relaxed);
   return instance->level();
 }
 
@@ -153,7 +154,7 @@ auto Audio::output(const double samples[]) -> void {
   constexpr double alpha = 0.16;
   constexpr double maxStep = 0.0035;
 
-  double fillLevel = instance->level();
+  double fillLevel = useWorker?_workerLevel.load(::std::memory_order_relaxed):instance->level();
   double targetMultiplier = (1.0 - 0.005) + 2.0 * fillLevel * 0.005;
 
   //smooth the multiplier with EMA + clamped step
@@ -197,13 +198,21 @@ auto Audio::_ringPush(const double samples[], uint channels) -> void {
   _ringBuffer[write * 2 + 0] = channels >= 1 ? samples[0] : 0.0;
   _ringBuffer[write * 2 + 1] = channels >= 2 ? samples[1] : 0.0;
   _ringWrite.store(next, ::std::memory_order_release);
-  _workerCV.notify_one();
+  // Wake a sleeping consumer only when its current watermark is crossed.
+  // While the endpoint is playing, per-sample notifications serve no purpose.
+  if(!_workerWaiting.load(::std::memory_order_acquire)) return;
+  const uint wakeFrames = _workerWakeFrames.load(::std::memory_order_relaxed);
+  const uint queued = _ringDistance(read, write);
+  if(queued < wakeFrames && queued + 1 >= wakeFrames) _workerCV.notify_one();
 }
 
 auto Audio::startWorker() -> void {
   if(_workerRunning) return;
   _ringRead = 0;
   _ringWrite = 0;
+  _workerWakeFrames = 1;
+  _workerWaiting = false;
+  _workerLevel.store(0.5,::std::memory_order_relaxed);
   instance->setWorkerActive(true);
   _workerRunning = true;
   _workerThread = ::std::thread([this] { _workerMain(); });
@@ -219,6 +228,8 @@ auto Audio::stopWorker() -> void {
 
 auto Audio::_workerMain() -> void {
   #if defined(PLATFORM_WINDOWS)
+  // Device recovery creates COM objects on this thread too.
+  HRESULT comResult=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
   SetThreadPriorityBoost(GetCurrentThread(), FALSE);
   DWORD taskIndex = 0;
@@ -228,6 +239,7 @@ auto Audio::_workerMain() -> void {
 
   bool primed = false;
   bool startup = true;
+  uint levelCountdown=0;
   while(_workerRunning) {
     uint read = _ringRead.load(::std::memory_order_relaxed);
     uint write = _ringWrite.load(::std::memory_order_acquire);
@@ -241,13 +253,21 @@ auto Audio::_workerMain() -> void {
     uint recoveryFrames = min(_ringCapacity - 1, max(128u, frequency * 8u / 1000u));
     uint primeFrames = startup ? startupFrames : recoveryFrames;
     if(!primed) {
+      _workerWakeFrames.store(primeFrames, ::std::memory_order_relaxed);
       if(_ringDistance(read, write) < primeFrames) {
+        _workerWaiting.store(true, ::std::memory_order_release);
         ::std::unique_lock<::std::mutex> lock(_workerMutex);
-        _workerCV.wait_for(lock, ::std::chrono::milliseconds(2));
+        _workerCV.wait_for(lock, ::std::chrono::milliseconds(2), [&] {
+          return !_workerRunning.load(::std::memory_order_acquire)
+            || _ringDistance(_ringRead.load(::std::memory_order_relaxed),
+                             _ringWrite.load(::std::memory_order_acquire)) >= primeFrames;
+        });
+        _workerWaiting.store(false, ::std::memory_order_release);
         continue;
       }
       primed = true;
       startup = false;
+      _workerWakeFrames.store(1, ::std::memory_order_relaxed);
     }
 
     if(read == write) {
@@ -255,11 +275,13 @@ auto Audio::_workerMain() -> void {
       //WASAPI normally has enough endpoint audio queued to cover this refill,
       //so it does not recreate the startup reserve on each underrun.
       primed = false;
+      _workerWaiting.store(true, ::std::memory_order_release);
       ::std::unique_lock<::std::mutex> lock(_workerMutex);
       _workerCV.wait_for(lock, ::std::chrono::milliseconds(1), [&] {
         return _ringRead.load(::std::memory_order_relaxed) != _ringWrite.load(::std::memory_order_acquire)
             || !_workerRunning;
       });
+      _workerWaiting.store(false, ::std::memory_order_release);
       continue;
     }
 
@@ -277,8 +299,9 @@ auto Audio::_workerMain() -> void {
 
     // Recheck during draining: WASAPI can block inside output(), so checking
     // only before this loop misses the backlog created by a device stall.
-    while(read != _ringWrite.load(::std::memory_order_acquire) && _workerRunning) {
+    while(_workerRunning.load(::std::memory_order_acquire)) {
       write = _ringWrite.load(::std::memory_order_acquire);
+      if(read == write) break;
       if(_ringDistance(read, write) > maxQueued) {
         read = (write + _ringCapacity - recoveryFrames) % _ringCapacity;
         _ringRead.store(read, ::std::memory_order_release);
@@ -290,12 +313,17 @@ auto Audio::_workerMain() -> void {
       _ringRead.store(next, ::std::memory_order_release);
       read = next;
 
+      // Query endpoint state on its owner thread, once per small batch rather
+      // than making driver calls from every emulated audio sample.
+      if(!levelCountdown){_workerLevel.store(instance->level(),::std::memory_order_relaxed);levelCountdown=256;}
+      levelCountdown--;
       instance->output(samples);
     }
   }
 
   #if defined(PLATFORM_WINDOWS)
   if(taskHandle) AvRevertMmThreadCharacteristics(taskHandle);
+  if(SUCCEEDED(comResult))CoUninitialize();
   #endif
 }
 

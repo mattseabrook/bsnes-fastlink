@@ -47,6 +47,18 @@ for(const [w,h,size] of [[1280,720,131072],[317,239,65536],[32,23,32768]]) {
         frames++;
       }
     }
+    // Repeated snapshots must keep age/heat decay and cached colors identical.
+    // Sparse changes also exercise unchanged cells beside newly flashing cells.
+    const ram=new Uint8Array(size);
+    for(let i=0;i<size;i++)ram[i]=(i*37+3*113)%256;
+    for(let step=0;step<12;step++) {
+      if(step===1) for(let i=0;i<size;i+=997) ram[i]^=255;
+      for(const f of [a,b]) { f.acceptRAM(ram); f.ops.length=0; f.draw(); }
+      assert.deepStrictEqual(a.pixels(),b.pixels(),`decay pixels: ${w} ${effect} ${color} ${step}`);
+      assert.strictEqual(JSON.stringify(a.ops),JSON.stringify(b.ops),'decay particle drawing');
+      assert.deepStrictEqual(Array.from(a.stats()),Array.from(b.stats()));
+      frames++;
+    }
   }
 }
 console.log(`PASS: ${frames} pixel-identical HTML frames; all effects/colors, resizes, zero-width tiles, cached redraws, particle draw operations, statistics`);

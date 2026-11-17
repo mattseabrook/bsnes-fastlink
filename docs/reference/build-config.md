@@ -68,18 +68,9 @@ Toolchain settings
     an Objective C++ compiler,
     defaults to `compiler` plus flags to set the language to Objective C++
 
-User Interface settings
+Windows x64 application
 -----------------------
 
-  - `hiro=cocoa` (default on macOS, only on macOS)
-    Build the macOS native user interface
-  - `hiro=gtk3` (default on Linux and FreeBSD, also available on Windows)
-    Build the user interface to use the GTK 3 library
-  - `hiro=qt5` (available on Linux and FreeBSD)
-    Build the user interface to use the Qt 5 library;
-    requires Qt development packages installed
-  - `hiro=qt6` (available on Linux and FreeBSD)
-    Build the user interface to use the Qt 6 library;
-    requires Qt development packages installed
-  - `hiro=windows` (default on Windows, only on Windows)
-    Build the Windows native user interface
+The application uses the Win32 API directly and is built with `./build.sh`.
+There is no selectable GUI toolkit. The retained core-only build is separate
+from the Windows application.

@@ -29,7 +29,9 @@ using namespace ruby;
 
 #include <ruby/video/video.cpp>
 #include <ruby/audio/audio.cpp>
+#if !defined(PLATFORM_WINDOWS)
 #include <ruby/input/input.cpp>
+#endif
 
 #if defined(DISPLAY_WINDOWS)
   #undef far

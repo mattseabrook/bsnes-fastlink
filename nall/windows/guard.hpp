@@ -11,16 +11,22 @@
 #define near
 
 #undef UNICODE
-#undef WINVER
 #undef WIN32_LEAN_AND_MEAN
-#undef _WIN32_WINNT
 #undef NOMINMAX
 #undef PATH_MAX
 
 #define UNICODE
+#ifndef WINVER
+#ifdef _WIN32_WINNT
+#define WINVER _WIN32_WINNT
+#else
 #define WINVER 0x0601
+#endif
+#endif
 #define WIN32_LEAN_AND_MEAN
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT WINVER
+#endif
 #define NOMINMAX
 #define PATH_MAX 260
 

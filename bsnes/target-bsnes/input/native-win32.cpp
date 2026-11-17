@@ -51,75 +51,16 @@ auto buttonPressed(const bool (&buttons)[MaximumRawButtons], int index) -> bool 
 }
 
 auto applyNativeInputThreadAffinity() -> void {
-  int processor = settings.fastLink.inputThreadAffinity;
-  if(processor == -1) return;
-
-  DWORD_PTR processMask = 0;
-  DWORD_PTR systemMask = 0;
-  if(!GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) || !processMask) return;
-
-  int target = processor;
-  if(target < 0) {
-    // Automatic affinity keeps the input publisher off the main emulator
-    // thread's physical core.  In particular, the default -2/-2 settings no
-    // longer resolve both threads to the final logical processor.
-    int mainProcessor = settings.fastLink.mainThreadAffinity;
-    if(mainProcessor < 0) {
-      mainProcessor = 0;
-      for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
-        if(processMask & ((DWORD_PTR)1 << index)) mainProcessor = index;
-      }
-    }
-    if(
-      mainProcessor < 0
-      || mainProcessor >= (int)(sizeof(DWORD_PTR) * 8)
-      || !(processMask & ((DWORD_PTR)1 << mainProcessor))
-    ) {
-      mainProcessor = 0;
-      for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
-        if(processMask & ((DWORD_PTR)1 << index)) mainProcessor = index;
-      }
-    }
-
-    DWORD_PTR mainCoreMask = (DWORD_PTR)1 << mainProcessor;
-    DWORD bytes = 0;
-    GetLogicalProcessorInformation(nullptr, &bytes);
-    if(bytes) {
-      auto count = bytes / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
-      vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> topology;
-      topology.resize(count);
-      if(GetLogicalProcessorInformation(topology.data(), &bytes)) {
-        for(auto& entry : topology) {
-          if(entry.Relationship == RelationProcessorCore && (entry.ProcessorMask & mainCoreMask)) {
-            mainCoreMask = entry.ProcessorMask;
-            break;
-          }
-        }
-      }
-    }
-
-    target = -1;
-    for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
-      DWORD_PTR candidate = (DWORD_PTR)1 << index;
-      if((processMask & candidate) && !(mainCoreMask & candidate)) target = index;
-    }
-    // Single-core systems still get separate logical processors when one is
-    // available; otherwise sharing the only processor is unavoidable.
-    if(target < 0) {
-      for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
-        DWORD_PTR candidate = (DWORD_PTR)1 << index;
-        if((processMask & candidate) && index != (uint)mainProcessor) target = index;
-      }
-    }
-    if(target < 0) target = mainProcessor;
-  }
-
-  if(target < 0 || target >= (int)(sizeof(DWORD_PTR) * 8)) return;
-
-  DWORD_PTR mask = (DWORD_PTR)1 << target;
-  if(!(processMask & mask)) return;
-  SetThreadAffinityMask(GetCurrentThread(), mask);
-  SetThreadIdealProcessor(GetCurrentThread(), target);
+  int processor=settings.fastLink.inputThreadAffinity;
+  // Automatic mode leaves scheduling to Windows/MMCSS rather than forcing
+  // input onto the last logical CPU. Explicit processor selection is retained.
+  if(processor<0 || processor>=(int)(sizeof(DWORD_PTR)*8))return;
+  DWORD_PTR processMask=0,systemMask=0;
+  if(!GetProcessAffinityMask(GetCurrentProcess(),&processMask,&systemMask))return;
+  DWORD_PTR mask=(DWORD_PTR)1<<processor;
+  if(!(processMask&mask))return;
+  SetThreadAffinityMask(GetCurrentThread(),mask);
+  SetThreadIdealProcessor(GetCurrentThread(),processor);
 }
 }
 
@@ -128,18 +69,10 @@ NativeInputManager nativeInputManager;
 auto NativeInputManager::initialize() -> bool {
   terminate();
 
-  {
-    ::std::lock_guard<::std::mutex> lock(_stateMutex);
-    _keyboardState.fill(0);
-    _keyboardMask.store(0, ::std::memory_order_release);
-    for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
-    _pads.clear();
-    _ignoredDevices.clear();
-  }
+  if(_rawInputBuffer.empty()) _rawInputBuffer.resize(32);
 
   _ready = false;
   _readySignal = false;
-  _running = true;
   _thread = ::std::thread([this] { threadMain(); });
 
   ::std::unique_lock<::std::mutex> lock(_readyMutex);
@@ -148,21 +81,14 @@ auto NativeInputManager::initialize() -> bool {
 }
 
 auto NativeInputManager::terminate() -> void {
-  if(!_running && !_thread.joinable()) return;
+  if(!_thread.joinable()) return;
+  if(auto window = _window.load(::std::memory_order_acquire)) PostMessage(window, WM_CLOSE, 0, 0);
+  _thread.join();
 
-  _running = false;
-  if(_window) PostMessage(_window, WM_CLOSE, 0, 0);
-  if(_thread.joinable()) _thread.join();
-
-  {
-    ::std::lock_guard<::std::mutex> lock(_stateMutex);
-    _window = nullptr;
-    _keyboardState.fill(0);
-    _keyboardMask.store(0, ::std::memory_order_release);
-    for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
-    _pads.clear();
-    _ignoredDevices.clear();
-  }
+  _window.store(nullptr, ::std::memory_order_release);
+  for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
+  _pads.clear();
+  _ignoredDevices.clear();
 
   _ready = false;
   _readySignal = false;
@@ -193,10 +119,10 @@ auto NativeInputManager::threadMain() -> void {
 
   auto window = CreateWindowW(
     L"BsnesFastlinkRawInput",
-    L"BsnesFastlinkRawInput",
-    WS_POPUP,
-    0, 0, 64, 64,
-    nullptr,
+    L"",
+    0,
+    0, 0, 0, 0,
+    HWND_MESSAGE,
     nullptr,
     GetModuleHandle(nullptr),
     this
@@ -208,16 +134,10 @@ auto NativeInputManager::threadMain() -> void {
     return;
   }
 
-  {
-    ::std::lock_guard<::std::mutex> lock(_stateMutex);
-    _window = window;
-  }
+  _window.store(window, ::std::memory_order_release);
 
   if(!registerRawInput(window)) {
-    {
-      ::std::lock_guard<::std::mutex> lock(_stateMutex);
-      _window = nullptr;
-    }
+    _window.store(nullptr, ::std::memory_order_release);
     DestroyWindow(window);
     if(taskHandle) AvRevertMmThreadCharacteristics(taskHandle);
     signalReady(false);
@@ -228,22 +148,13 @@ auto NativeInputManager::threadMain() -> void {
 
   MSG message = {};
   while(GetMessage(&message, nullptr, 0, 0) > 0) {
-    TranslateMessage(&message);
     DispatchMessage(&message);
   }
 
   unregisterRawInput();
-  {
-    ::std::lock_guard<::std::mutex> lock(_stateMutex);
-    _window = nullptr;
-    _keyboardState.fill(0);
-    _keyboardMask.store(0, ::std::memory_order_release);
-    for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
-    _pads.clear();
-    _ignoredDevices.clear();
-  }
+  _window.store(nullptr, ::std::memory_order_release);
+  for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
   if(taskHandle) AvRevertMmThreadCharacteristics(taskHandle);
-  _running = false;
 }
 
 auto NativeInputManager::signalReady(bool ready) -> void {
@@ -256,73 +167,43 @@ auto NativeInputManager::signalReady(bool ready) -> void {
 }
 
 auto NativeInputManager::registerRawInput(HWND window) -> bool {
-  RAWINPUTDEVICE devices[3] = {};
-
-  devices[0].usUsagePage = 0x01;
-  devices[0].usUsage = 0x06;
-  devices[0].dwFlags = RIDEV_INPUTSINK;
-  devices[0].hwndTarget = window;
-
-  devices[1].usUsagePage = 0x01;
-  devices[1].usUsage = 0x04;
-  devices[1].dwFlags = RIDEV_INPUTSINK | RIDEV_DEVNOTIFY;
-  devices[1].hwndTarget = window;
-
-  devices[2].usUsagePage = 0x01;
-  devices[2].usUsage = 0x05;
-  devices[2].dwFlags = RIDEV_INPUTSINK | RIDEV_DEVNOTIFY;
-  devices[2].hwndTarget = window;
-
-  return RegisterRawInputDevices(devices, 3, sizeof(RAWINPUTDEVICE));
+  const RAWINPUTDEVICE devices[] = {
+    {0x01, 0x04, RIDEV_INPUTSINK | RIDEV_DEVNOTIFY, window},
+    {0x01, 0x05, RIDEV_INPUTSINK | RIDEV_DEVNOTIFY, window},
+  };
+  return RegisterRawInputDevices(devices, 2, sizeof(RAWINPUTDEVICE));
 }
 
 auto NativeInputManager::unregisterRawInput() -> void {
-  RAWINPUTDEVICE devices[3] = {};
-
-  devices[0].usUsagePage = 0x01;
-  devices[0].usUsage = 0x06;
-  devices[0].dwFlags = RIDEV_REMOVE;
-
-  devices[1].usUsagePage = 0x01;
-  devices[1].usUsage = 0x04;
-  devices[1].dwFlags = RIDEV_REMOVE;
-
-  devices[2].usUsagePage = 0x01;
-  devices[2].usUsage = 0x05;
-  devices[2].dwFlags = RIDEV_REMOVE;
-
-  RegisterRawInputDevices(devices, 3, sizeof(RAWINPUTDEVICE));
+  const RAWINPUTDEVICE devices[] = {
+    {0x01, 0x04, RIDEV_REMOVE, nullptr},
+    {0x01, 0x05, RIDEV_REMOVE, nullptr},
+  };
+  RegisterRawInputDevices(devices, 2, sizeof(RAWINPUTDEVICE));
 }
 
 auto NativeInputManager::removePad(HANDLE device) -> void {
-  ::std::lock_guard<::std::mutex> lock(_stateMutex);
   _pads.erase(::std::remove_if(_pads.begin(), _pads.end(), [&](auto& pad) {
     return pad.device == device;
   }), _pads.end());
   _ignoredDevices.erase(::std::remove(_ignoredDevices.begin(), _ignoredDevices.end(), device), _ignoredDevices.end());
-  refreshPadMasksLocked();
+  refreshPadMasks();
 }
 
 auto NativeInputManager::handleRawInput(HRAWINPUT rawInput) -> void {
-  UINT size = 0;
-  if(GetRawInputData(rawInput, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) != 0 || size == 0) return;
-
-  ::std::array<BYTE, 1024> stackBuffer;
-  ::std::vector<BYTE> heapBuffer;
-  BYTE* buffer = stackBuffer.data();
-  if(size > stackBuffer.size()) {
-    heapBuffer.resize(size);
-    buffer = heapBuffer.data();
+  // DWORD-aligned storage is retained by the input thread. Normal packets need
+  // one Win32 call; query/grow only when an unusually large report arrives.
+  UINT size = (UINT)(_rawInputBuffer.size() * sizeof(RAWINPUT));
+  UINT received = GetRawInputData(rawInput, RID_INPUT, _rawInputBuffer.data(), &size, sizeof(RAWINPUTHEADER));
+  if(received == (UINT)-1) {
+    if(GetLastError() != ERROR_INSUFFICIENT_BUFFER) return;
+    size = 0;
+    if(GetRawInputData(rawInput, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) != 0 || !size) return;
+    _rawInputBuffer.resize((size + sizeof(RAWINPUT) - 1) / sizeof(RAWINPUT));
+    received = GetRawInputData(rawInput, RID_INPUT, _rawInputBuffer.data(), &size, sizeof(RAWINPUTHEADER));
   }
-
-  if(GetRawInputData(rawInput, RID_INPUT, buffer, &size, sizeof(RAWINPUTHEADER)) != size) return;
-
-  auto* input = reinterpret_cast<RAWINPUT*>(buffer);
-
-  if(input->header.dwType == RIM_TYPEKEYBOARD) {
-    handleRawKeyboard(input->data.keyboard);
-    return;
-  }
+  if(received == (UINT)-1 || received < sizeof(RAWINPUTHEADER)) return;
+  const auto* input = _rawInputBuffer.data();
 
   if(input->header.dwType != RIM_TYPEHID) return;
   if(!input->header.hDevice) return;
@@ -330,37 +211,24 @@ auto NativeInputManager::handleRawInput(HRAWINPUT rawInput) -> void {
   handleRawHid(input->header.hDevice, input->data.hid);
 }
 
-auto NativeInputManager::handleRawKeyboard(const RAWKEYBOARD& keyboard) -> void {
-  auto virtualKey = resolveVirtualKey(keyboard);
-  if(virtualKey == 0 || virtualKey >= _keyboardState.size()) return;
-
-  auto bit = keyboardMaskForKey(virtualKey);
-  if(bit) {
-    if(keyboard.Flags & RI_KEY_BREAK) {
-      _keyboardMask.fetch_and(~bit, ::std::memory_order_release);
-    } else {
-      _keyboardMask.fetch_or(bit, ::std::memory_order_release);
-    }
-  }
-
-  ::std::lock_guard<::std::mutex> lock(_stateMutex);
-  _keyboardState[virtualKey] = (keyboard.Flags & RI_KEY_BREAK) ? 0 : 1;
-}
-
 auto NativeInputManager::handleRawHid(HANDLE device, const RAWHID& hid) -> void {
   const auto reportLength = hid.dwSizeHid;
   if(reportLength == 0 || hid.dwCount == 0) return;
   const auto* report = hid.bRawData + (hid.dwCount - 1) * reportLength;
 
-  ::std::lock_guard<::std::mutex> lock(_stateMutex);
-  if(::std::find(_ignoredDevices.begin(), _ignoredDevices.end(), device) != _ignoredDevices.end()) return;
-
-  for(auto& pad : _pads) {
+  for(uint port = 0; port < _pads.size(); port++) {
+    auto& pad = _pads[port];
     if(pad.device != device) continue;
     updateRawHidPadReport(pad, report, reportLength);
-    refreshPadMasksLocked();
+    // Connected pads keep their port until insertion/removal compacts the list.
+    if(port < _padMasks.size()) {
+      const auto mask = padToMask(pad);
+      if(_padMasks[port].load(::std::memory_order_relaxed) != mask)
+        _padMasks[port].store(mask, ::std::memory_order_release);
+    }
     return;
   }
+  if(::std::find(_ignoredDevices.begin(), _ignoredDevices.end(), device) != _ignoredDevices.end()) return;
 
   if(isXInputDevice(device)) {
     _ignoredDevices.push_back(device);
@@ -371,7 +239,7 @@ auto NativeInputManager::handleRawHid(HANDLE device, const RAWHID& hid) -> void 
   if(!initializeRawHidPad(device, pad)) return;
   updateRawHidPadReport(pad, report, reportLength);
   _pads.push_back(::std::move(pad));
-  refreshPadMasksLocked();
+  refreshPadMasks();
 }
 
 auto NativeInputManager::initializeRawHidPad(HANDLE device, HidPad& pad) -> bool {
@@ -399,6 +267,7 @@ auto NativeInputManager::initializeRawHidPad(HANDLE device, HidPad& pad) -> bool
   pad.xAxis = getUsageInfo(pad, 0x30);
   pad.yAxis = getUsageInfo(pad, 0x31);
   pad.hat = getUsageInfo(pad, 0x39);
+  pad.dataList.resize(HidP_MaxDataListLength(HidP_Input, preparsed));
 
   USHORT buttonCapsLength = pad.caps.NumberInputButtonCaps;
   if(buttonCapsLength == 0) return true;
@@ -473,9 +342,8 @@ auto NativeInputManager::updateRawHidPadReport(HidPad& pad, const BYTE* report, 
   HidPadState state = {};
   state.attached = true;
 
-  auto dataLength = HidP_MaxDataListLength(HidP_Input, preparsed);
+  ULONG dataLength = (ULONG)pad.dataList.size();
   if(dataLength > 0 && !pad.buttonDataIndices.empty()) {
-    pad.dataList.resize(dataLength);
     if(HidP_GetData(HidP_Input, pad.dataList.data(), &dataLength, preparsed, (PCHAR)report, reportLength) == HIDP_STATUS_SUCCESS) {
       for(ULONG index = 0; index < dataLength; index++) {
         auto button = ::std::lower_bound(pad.buttonDataIndices.begin(), pad.buttonDataIndices.end(), pad.dataList[index].DataIndex);
@@ -522,100 +390,42 @@ auto NativeInputManager::updateRawHidPadReport(HidPad& pad, const BYTE* report, 
   pad.state = state;
 }
 
-auto NativeInputManager::refreshPadMasksLocked() -> void {
-  for(auto& mask : _padMasks) mask.store(0, ::std::memory_order_release);
-
+auto NativeInputManager::refreshPadMasks() -> void {
   uint activePort = 0;
   for(auto& pad : _pads) {
     if(!pad.state.attached) continue;
     if(activePort >= _padMasks.size()) break;
     _padMasks[activePort++].store(padToMask(pad), ::std::memory_order_release);
   }
+  // Publish each port once: clearing attached pads first exposes a false
+  // button release to the emulation thread between the two atomic stores.
+  while(activePort < _padMasks.size()) _padMasks[activePort++].store(0, ::std::memory_order_release);
 }
 
 auto NativeInputManager::padToMask(const HidPad& pad) const -> uint32_t {
-  uint32_t mask = 0;
-  for(uint input = GamepadUp; input <= GamepadStart; input++) {
-    if(mapPad(pad, input)) mask |= 1u << input;
-  }
-  return mask;
-}
-
-auto NativeInputManager::keyboardMaskForKey(WORD key) const -> uint32_t {
-  switch(key) {
-  case VK_UP: return 1u << GamepadUp;
-  case VK_DOWN: return 1u << GamepadDown;
-  case VK_LEFT: return 1u << GamepadLeft;
-  case VK_RIGHT: return 1u << GamepadRight;
-  case 'Z': return 1u << GamepadB;
-  case 'X': return 1u << GamepadA;
-  case 'A': return 1u << GamepadY;
-  case 'S': return 1u << GamepadX;
-  case 'Q': return 1u << GamepadL;
-  case 'W': return 1u << GamepadR;
-  case VK_LSHIFT:
-  case VK_RSHIFT: return 1u << GamepadSelect;
-  case VK_RETURN: return 1u << GamepadStart;
-  }
-  return 0;
-}
-
-auto NativeInputManager::mapKeyboard(uint port, uint input) const -> bool {
-  if(port != 0) return false;
-  if(input > GamepadStart) return false;
-  return _keyboardMask.load(::std::memory_order_acquire) & (1u << input);
-}
-
-auto NativeInputManager::mapPad(const HidPad& pad, uint input) const -> bool {
-  // Known RetroUSB devices always use their established physical ordering.
-  // Unknown HID devices default to that compatibility map for existing
-  // FastLink users, but can opt into conventional HID ordering in the config.
-  auto mapping = isRetroUSBController(pad.vendorID, pad.productID)
+  // Known RetroUSB devices keep their physical ordering; unknown devices can
+  // opt into conventional HID ordering through the configuration.
+  const auto& mapping = isRetroUSBController(pad.vendorID, pad.productID)
     || settings.fastLink.genericHIDMapping == "SNES Adapter"
     ? RetroUSBButtonMap : StandardHIDButtonMap;
-
-  switch(input) {
-  case GamepadUp: return pad.state.up;
-  case GamepadDown: return pad.state.down;
-  case GamepadLeft: return pad.state.left;
-  case GamepadRight: return pad.state.right;
-  case GamepadB: return buttonPressed(pad.state.buttons, mapping.b);
-  case GamepadA: return buttonPressed(pad.state.buttons, mapping.a);
-  case GamepadY: return buttonPressed(pad.state.buttons, mapping.y);
-  case GamepadX: return buttonPressed(pad.state.buttons, mapping.x);
-  case GamepadL: return buttonPressed(pad.state.buttons, mapping.l);
-  case GamepadR: return buttonPressed(pad.state.buttons, mapping.r);
-  case GamepadSelect: return buttonPressed(pad.state.buttons, mapping.select);
-  case GamepadStart: return buttonPressed(pad.state.buttons, mapping.start);
-  }
-
-  return false;
+  const auto& state = pad.state;
+  return uint32_t(state.up) << GamepadUp
+    | uint32_t(state.down) << GamepadDown
+    | uint32_t(state.left) << GamepadLeft
+    | uint32_t(state.right) << GamepadRight
+    | uint32_t(buttonPressed(state.buttons, mapping.b)) << GamepadB
+    | uint32_t(buttonPressed(state.buttons, mapping.a)) << GamepadA
+    | uint32_t(buttonPressed(state.buttons, mapping.y)) << GamepadY
+    | uint32_t(buttonPressed(state.buttons, mapping.x)) << GamepadX
+    | uint32_t(buttonPressed(state.buttons, mapping.l)) << GamepadL
+    | uint32_t(buttonPressed(state.buttons, mapping.r)) << GamepadR
+    | uint32_t(buttonPressed(state.buttons, mapping.select)) << GamepadSelect
+    | uint32_t(buttonPressed(state.buttons, mapping.start)) << GamepadStart;
 }
 
 auto NativeInputManager::pollGamepad(uint port, uint input) -> int16 {
-  if(input > GamepadStart) return 0;
-  uint32_t mask = port == 0 ? _keyboardMask.load(::std::memory_order_acquire) : 0;
-  if(port < _padMasks.size()) mask |= _padMasks[port].load(::std::memory_order_acquire);
-  bool pressed = mask & (1u << input);
-  return pressed ? 1 : 0;
-}
-
-auto NativeInputManager::rumbleGamepad(uint port, uint input, bool enable) -> void {
-}
-
-auto NativeInputManager::resolveVirtualKey(const RAWKEYBOARD& keyboard) -> WORD {
-  auto virtualKey = keyboard.VKey;
-  if(virtualKey == 255) return 0;
-
-  if(virtualKey == VK_SHIFT) {
-    virtualKey = (WORD)MapVirtualKey(keyboard.MakeCode, MAPVK_VSC_TO_VK_EX);
-  } else if(virtualKey == VK_CONTROL) {
-    virtualKey = (keyboard.Flags & RI_KEY_E0) ? VK_RCONTROL : VK_LCONTROL;
-  } else if(virtualKey == VK_MENU) {
-    virtualKey = (keyboard.Flags & RI_KEY_E0) ? VK_RMENU : VK_LMENU;
-  }
-
-  return virtualKey;
+  if(port >= _padMasks.size() || input > GamepadStart) return 0;
+  return (_padMasks[port].load(::std::memory_order_acquire) >> input) & 1u;
 }
 
 auto NativeInputManager::isXInputDevice(HANDLE device) -> bool {
@@ -678,6 +488,4 @@ auto NativeInputManager::pollGamepad(uint port, uint input) -> int16 {
   return 0;
 }
 
-auto NativeInputManager::rumbleGamepad(uint port, uint input, bool enable) -> void {
-}
 #endif

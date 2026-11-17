@@ -1,4 +1,3 @@
-hiro/hiro.cpp|build_win/obj/hiro-windows.obj|cpp
 ruby/ruby.cpp|build_win/obj/ruby.obj|cpp
 libco/libco.c|build_win/obj/libco.obj|c
 bsnes/emulator/emulator.cpp|build_win/obj/emulator.obj|cpp
@@ -40,7 +39,6 @@ bsnes/target-bsnes/video/native-vulkan.cpp|build_win/obj/target-video.obj|cpp
 bsnes/target-bsnes/fastlink/ram-trace.cpp|build_win/obj/target-fastlink-ramtrace.obj|cpp
 bsnes/target-bsnes/program/program.cpp|build_win/obj/target-program.obj|cpp
 bsnes/target-bsnes/input/input.cpp|build_win/obj/target-input.obj|cpp
-bsnes/target-bsnes/presentation/presentation.cpp|build_win/obj/target-presentation.obj|cpp
+bsnes/target-bsnes/native-ui.cpp|build_win/obj/target-native-ui.obj|cpp
 bsnes/target-bsnes/settings/settings.cpp|build_win/obj/target-settings.obj|cpp
-bsnes/target-bsnes/tools/tools.cpp|build_win/obj/target-tools.obj|cpp
 bsnes/target-bsnes/resource/resource.cpp|build_win/obj/target-resource.obj|cpp

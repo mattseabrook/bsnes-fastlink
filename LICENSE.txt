@@ -23,7 +23,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 libco - C cooperative threading library
 nall  - C++ template library
 ruby  - Hardware abstraction library
-hiro  - User interface library
 
   Copyright © 2006-2020 byuu et al
 

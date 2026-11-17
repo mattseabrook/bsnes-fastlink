@@ -1,64 +1,53 @@
+#pragma once
 #include "../fastlink/frame-pacer.hpp"
+#include "../fastlink/timing.hpp"
 
-struct Program : Lock, Emulator::Platform {
-  Application::Namespace tr{"Program"};
-
-  //program.cpp
-  auto create() -> void;
+struct Program : Emulator::Platform {
+  auto create() -> bool;
   auto main() -> void;
-  auto paceFrame() -> void;
-  auto resetFramePacer() -> void;
   auto quit() -> void;
-
-  //platform.cpp
-  auto open(uint id, string name, vfs::file::mode mode, bool required) -> shared_pointer<vfs::file> override;
-  auto load(uint id, string name, string type, vector<string> options = {}) -> Emulator::Platform::Load override;
-  auto videoFrame(const uint16* data, uint pitch, uint width, uint height, uint scale) -> void override;
-  auto audioFrame(const double* samples, uint channels) -> void override;
-  auto inputPoll(uint port, uint device, uint input) -> int16 override;
-  auto inputRumble(uint port, uint device, uint input, bool enable) -> void override;
-
-  //game.cpp
+  auto shutdown() -> void;
+  auto paceFrame() -> void;
+  auto resetFramePacer() -> void { framePacer.reset(); }
+  auto focused() const -> bool;
+  auto inactive() const -> bool;
   auto load() -> void;
+  auto save() -> void;
+  auto reset() -> void;
+  auto power() -> void;
+  auto unload() -> void;
+  auto verified() const -> bool;
   auto loadFile(string location) -> vector<uint8_t>;
   auto loadSuperFamicom(string location) -> bool;
   auto loadGameBoy(string location) -> bool;
   auto loadBSMemory(string location) -> bool;
   auto loadSufamiTurboA(string location) -> bool;
   auto loadSufamiTurboB(string location) -> bool;
-  auto save() -> void;
-  auto reset() -> void;
-  auto power() -> void;
-  auto unload() -> void;
-  auto verified() const -> bool;
-
-  //game-pak.cpp
+  auto open(uint id, string name, vfs::file::mode mode, bool required) -> shared_pointer<vfs::file> override;
+  auto load(uint id, string name, string type, vector<string> options = {}) -> Emulator::Platform::Load override;
+  auto videoFrame(const uint16* data, uint pitch, uint width, uint height, uint scale) -> void override;
+  auto audioFrame(const double* samples, uint channels) -> void override;
+  auto inputPoll(uint port, uint device, uint input) -> int16 override;
+  auto inputRumble(uint, uint, uint, bool) -> void override {}
   auto openPakSuperFamicom(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
-  auto openPakGameBoy(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
-  auto openPakBSMemory(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
-  auto openPakSufamiTurboA(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
-  auto openPakSufamiTurboB(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
-
-  //game-rom.cpp
   auto openRomSuperFamicom(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
+  auto openPakGameBoy(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
   auto openRomGameBoy(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
+  auto openPakBSMemory(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
   auto openRomBSMemory(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
+  auto openPakSufamiTurboA(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
   auto openRomSufamiTurboA(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
+  auto openPakSufamiTurboB(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
   auto openRomSufamiTurboB(string name, vfs::file::mode mode) -> shared_pointer<vfs::file>;
-
-  //paths.cpp
   auto path(string type, string location, string extension = "") -> string;
   auto gamePath() -> string;
   auto cheatPath() -> string;
   auto statePath() -> string;
   auto screenshotPath() -> string;
-
-  //states.cpp
-  struct State {
-    string name;
-    uint64_t date;
-    static const uint Signature;
-  };
+  auto appliedPatch() const -> bool;
+  auto applyPatchIPS(vector<uint8_t>& data, string location) -> bool;
+  auto applyPatchBPS(vector<uint8_t>& data, string location) -> bool;
+  struct State { string name; uint64_t date; static const uint Signature; };
   auto availableStates(string type) -> vector<State>;
   auto hasState(string filename) -> bool;
   auto loadStateData(string filename) -> vector<uint8_t>;
@@ -68,61 +57,19 @@ struct Program : Lock, Emulator::Platform {
   auto saveRedoState() -> bool;
   auto removeState(string filename) -> bool;
   auto renameState(string from, string to) -> bool;
-
-  //video.cpp
-  auto updateVideoDriver(Window parent) -> void;
-  auto updateVideoExclusive() -> void;
-  auto updateVideoBlocking() -> void;
-  auto updateVideoFlush() -> void;
-  auto updateVideoPresentMode() -> void;
-  auto updateVideoMonitor() -> void;
-  auto updateVideoFormat() -> void;
-  auto updateVideoShader() -> void;
-  auto updateVideoPalette() -> void;
-  auto updateVideoEffects() -> void;
-  auto toggleVideoFullScreen() -> void;
-  auto toggleVideoPseudoFullScreen() -> void;
-
-  //audio.cpp
-  auto updateAudioDriver(Window parent) -> void;
-  auto updateAudioExclusive() -> void;
-  auto updateAudioDevice() -> void;
-  auto updateAudioBlocking() -> void;
-  auto updateAudioDynamic() -> void;
-  auto updateAudioFrequency() -> void;
-  auto updateAudioLatency() -> void;
-  auto updateAudioEffects() -> void;
-
-  //input.cpp
-  auto updateInputDriver(Window parent) -> void;
-
-  //utility.cpp
-  auto openGame(BrowserDialog& dialog) -> string;
-  auto openFile(BrowserDialog& dialog) -> string;
-  auto saveFile(BrowserDialog& dialog) -> string;
-  auto selectPath() -> string;
-  auto showMessage(string text) -> void;
-  auto showFrameRate(string text) -> void;
-  auto updateStatus() -> void;
   auto captureScreenshot() -> bool;
-  auto inactive() -> bool;
-  auto focused() -> bool;
-
-  //patch.cpp
-  auto appliedPatch() const -> bool;
-  auto applyPatchIPS(vector<uint8_t>& data, string location) -> bool;
-  auto applyPatchBPS(vector<uint8_t>& data, string location) -> bool;
-
-  //hacks.cpp
-
-  //filter.cpp
-  auto filterSelect(uint& width, uint& height, uint scale) -> Filter::Render;
-
-  //viewport.cpp
-  auto viewportSize(uint& width, uint& height, uint scale) -> void;
-  auto viewportRefresh() -> void;
-
-public:
+  auto updateVideoPalette() -> void;
+  auto updateVideoDriver(HWND owner) -> bool;
+  auto updateAudioDriver(HWND owner) -> bool;
+  auto updateAudioFrequency() -> void;
+  auto updateAudioEffects() -> void;
+  auto toggleVideoFullScreen() -> void;
+  auto refresh() -> bool;
+  auto presentVideo() -> void;
+  auto showMessage(string text) -> void;
+  auto updateCheats() -> void;
+  auto decodeSNES(string& code) -> bool;
+  auto decodeGB(string& code) -> bool;
   struct Game {
     explicit operator bool() const { return (bool)location; }
 
@@ -168,26 +115,17 @@ public:
     uint scale  = 0;
   } screenshot;
 
-  bool frameAdvanceLock = false;
-  bool loading = false;
-
-  uint64 autoSaveTime;
-  FastLinkFramePacer framePacer;
-
-  uint64 statusTime;
-  string statusMessage;
-  string statusFrameRate;
-
-  bool startFullScreen = false;
-
-  struct Mute { enum : uint {
-    Always      = 1 << 1,
-    Unfocused   = 1 << 2,
-    FastForward = 1 << 3,
-  };};
+  bool loading = false, inFrame = false, paused = false;
+  bool hostSuspended = false;
+  bool frameFocused = true;
+  bool frameAdvance = false, frameAdvanceLock = false;
+  bool fastForwarding = false, startFullScreen = false;
+  double speed = 1.0;
   uint mute = 0;
-
-  bool fastForwarding = false;
+  struct Mute { enum : uint { Always = 2, Unfocused = 4, FastForward = 8 }; };
+  uint64 statusTime = 0;
+  string statusMessage, statusFrameRate;
+  FastLinkFramePacer framePacer;
+  FastLinkTiming timing;
 };
-
 extern Program program;

@@ -26,5 +26,14 @@ int main() {
   timing.record(1000000000, 1000000100, 1000000200, 1000000300,
     1000000800, 1000000900, 1000, 0);
   assert(timing.current.wall == 900);  // paused time is excluded
+  timing.path.clear();
+  timing.restartCapture();
+  assert(timing.enabled() && timing.path.empty());
+  timing.beginFrame();
+  timing.record(100,110,120,130,180,200,1000,0,false);
+  assert(timing.current.frames==1 && timing.current.missedPresentations==1);
+  assert(timing.report().find("Renderer busy at frame start: 1 frames")!=std::string::npos);
+  timing.save();  // RAM capture alone never creates a file.
+  assert(timing.path.empty() && timing.count==0);
   std::puts("PASS: capture disabled by default; time accounting, video attribution, pause exclusion, sample rollover");
 }

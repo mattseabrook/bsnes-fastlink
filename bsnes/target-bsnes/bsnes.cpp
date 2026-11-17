@@ -1,66 +1,37 @@
 #include "bsnes.hpp"
+#include <mmsystem.h>
 #include <sfc/interface/interface.hpp>
-#if defined(PLATFORM_WINDOWS)
 NativeVideoManager video;
-#else
-Video video;
-#endif
-Audio audio;
-Input input;
+ruby::Audio audio;
 unique_pointer<Emulator::Interface> emulator;
 
 auto locate(string name) -> string {
-  string location = {Path::program(), name};
-  if(inode::exists(location)) return location;
-
-  location = {Path::userData(), "bsnes/", name};
-  if(inode::exists(location)) return location;
-
-  directory::create({Path::userSettings(), "bsnes/"});
-  return {Path::userSettings(), "bsnes/", name};
+  string location={Path::program(),name};if(inode::exists(location))return location;
+  location={Path::userData(),"bsnes/",name};if(inode::exists(location))return location;
+  directory::create({Path::userSettings(),"bsnes/"});return {Path::userSettings(),"bsnes/",name};
 }
-
-#include <nall/main.hpp>
-auto nall::main(Arguments arguments) -> void {
-  settings.location = locate("settings.bml");
-
-  for(auto argument : arguments) {
-    if(argument == "--fullscreen") {
-      program.startFullScreen = true;
-    } else if(argument.beginsWith("--locale=")) {
-      Application::locale().scan(locate("Locale/"));
-      Application::locale().select(argument.trimLeft("--locale=", 1L));
-    } else if(argument.beginsWith("--settings=")) {
-      settings.location = argument.trimLeft("--settings=", 1L);
-    } else if(inode::exists(argument)) {
-      //game without option
-      program.gameQueue.append({"Auto;", argument});
-    } else if(argument.find(";")) {
-      //game with option
-      auto game = argument.split(";", 1L);
-      if(inode::exists(game.last())) program.gameQueue.append(argument);
-    }
+int main() {
+  ULONG crashStack=64*1024;SetThreadStackGuarantee(&crashStack);
+  SetUnhandledExceptionFilter(fastLinkReportException);
+  CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+  settings.location=locate("settings.bml");
+  int count=0;auto arguments=CommandLineToArgvW(GetCommandLineW(),&count);
+  for(int i=1;arguments&&i<count;i++){
+    string argument=(const char*)utf8_t(arguments[i]);
+    if(argument=="--fullscreen")program.startFullScreen=true;
+    else if(argument.beginsWith("--settings="))settings.location=argument.slice(11);
+    else if(inode::exists(argument)){if(directory::exists(argument)&&!argument.endsWith("/"))argument.append("/");program.gameQueue.append({"Auto;",argument});}
+    else if(argument.find(";"))program.gameQueue.append(argument);
   }
-
-  settings.load();
-  Application::setName("bsnes-fastlink");
-  Application::setToolTips(settings.general.toolTips);
-
-  Instances::presentation.construct();
-  presentation.setBackgroundColor({0, 0, 0});
-  Instances::settingsWindow.construct();
-  Instances::cheatDatabase.construct();
-  Instances::cheatWindow.construct();
-  Instances::stateWindow.construct();
-  Instances::toolsWindow.construct();
-  emulator = new SuperFamicom::Interface;
-  program.create();
-
-  Application::run();
-  Instances::presentation.destruct();
-  Instances::settingsWindow.destruct();
-  Instances::cheatDatabase.destruct();
-  Instances::cheatWindow.destruct();
-  Instances::stateWindow.destruct();
-  Instances::toolsWindow.destruct();
+  if(arguments)LocalFree(arguments);
+  settings.load();emulator=new SuperFamicom::Interface;
+  int result=1;
+  if(nativeCreate(GetModuleHandleW(nullptr))&&program.create())result=nativeRun();
+  nativeCloseTools();
+  if(optionsWindow)SendMessageW(optionsWindow,WM_CLOSE,0,0);
+  program.unload();fastLinkRAMTraceService.stop();nativeInputManager.terminate();audio.reset();video.reset();program.timing.save();
+  nativeShutdown();settings.save();
+  SetThreadExecutionState(ES_CONTINUOUS);
+  program.shutdown();
+  emulator.reset();CoUninitialize();return result;
 }

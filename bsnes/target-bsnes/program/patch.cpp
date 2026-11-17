@@ -30,13 +30,7 @@ auto Program::applyPatchIPS(vector<uint8_t>& data, string location) -> bool {
   if(!patch) return false;
 
   bool headered = false;
-  if(MessageDialog().setAlignment(*presentation).setTitle({Location::prefix(location), ".ips"}).setText({
-    "(You're seeing this prompt because IPS is a terrible patch file format,\n"
-    " and nobody can agree on whether SNES ROMs should be headered or not.\n"
-    " Please consider asking the patch author to use BPS patches instead.)\n\n"
-    "Does this IPS patch expect to be applied to a headered ROM?\n"
-    "If you're not sure, try 'No', and if it fails to work, try again with 'Yes'."
-  }).question() == "Yes") headered = true;
+  headered = nativeConfirm("Does this IPS patch expect a copier-headered ROM?", "IPS Patch");
 
   //sanity checks
   if(patch.size() < 8) return false;
@@ -133,9 +127,6 @@ auto Program::applyPatchBPS(vector<uint8_t>& input, string location) -> bool {
     }
   }
 
-  MessageDialog({
-    error, "\n\n",
-    "Please ensure you are using the correct (headerless) ROM for this patch."
-  }).setAlignment(*presentation).error();
+  nativeError("The BPS patch could not be applied to this ROM.");
   return false;
 }

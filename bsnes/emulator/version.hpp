@@ -1,0 +1,18 @@
+#ifndef FASTLINK_VERSION_HPP
+#define FASTLINK_VERSION_HPP
+
+#define FASTLINK_VERSION_MAJOR 115
+#define FASTLINK_VERSION_MINOR 0
+
+#ifdef FASTLINK_VERSIONED_BUILD
+  // Generated before compilation; the counter is committed only after linking.
+  #include "../../.build-version/pending.hpp"
+#else
+  #define FASTLINK_VERSION_STRINGIFY_(value) #value
+  #define FASTLINK_VERSION_STRINGIFY(value) FASTLINK_VERSION_STRINGIFY_(value)
+  #define FASTLINK_VERSION_STRING FASTLINK_VERSION_STRINGIFY(FASTLINK_VERSION_MAJOR) "." FASTLINK_VERSION_STRINGIFY(FASTLINK_VERSION_MINOR)
+  #define FASTLINK_VERSION_DATE_WORD 0
+  #define FASTLINK_VERSION_BUILD 0
+#endif
+
+#endif

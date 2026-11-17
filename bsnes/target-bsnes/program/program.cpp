@@ -1,494 +1,270 @@
 #include "../bsnes.hpp"
+#include <mmsystem.h>
 #include <sfc/sfc.hpp>
 #undef platform
-#include "../fastlink/timing.hpp"
-namespace { FastLinkTiming frameTiming; }
+#include <nall/encode/bmp.hpp>
+#include "latency.cpp"
 #include "platform.cpp"
 #include "game.cpp"
-#include "game-pak.cpp"
 #include "game-rom.cpp"
+#include "game-pak.cpp"
 #include "paths.cpp"
-#include "states.cpp"
-#include "video.cpp"
-#include "audio.cpp"
-#include "input.cpp"
-#include "utility.cpp"
 #include "patch.cpp"
-#include "filter.cpp"
-#include "viewport.cpp"
-
-#if defined(PLATFORM_WINDOWS)
-extern "C" __declspec(dllimport) UINT WINAPI timeBeginPeriod(UINT period);
-extern "C" __declspec(dllimport) UINT WINAPI timeEndPeriod(UINT period);
-#include <csignal>
-#include <exception>
-#ifndef TIMERR_NOERROR
-#define TIMERR_NOERROR 0
-#endif
-
-auto WINAPI fastLinkInvalidParameterHandler(const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t) -> void {
-  fastLinkCrashWrite("invalid-parameter");
-  std::abort();
-}
-
-auto fastLinkTerminateHandler() -> void {
-  fastLinkCrashWrite("terminate");
-  std::abort();
-}
-
-auto fastLinkSignalHandler(int signal) -> void {
-  fastLinkCrashWrite(signal == SIGABRT ? "signal-sigabrt" : "signal");
-  std::abort();
-}
-#endif
+#include "states.cpp"
+#include "palette.cpp"
+#include "screenshot.cpp"
+#include "cheat-codes.cpp"
 
 Program program;
 
-#if defined(PLATFORM_WINDOWS)
-namespace {
-bool windowsLatencyModeActive = false;
-bool ntTimerResolutionActive = false;
-ULONG ntTimerResolutionCurrent = 0;
-GUID* previousPowerScheme = nullptr;
-
-using NtSetTimerResolutionProc = LONG (WINAPI*)(ULONG, BOOLEAN, PULONG);
-
-auto applyThreadAffinity(int processor) -> void {
-  if(processor == -1) return;
-
-  DWORD_PTR processMask = 0;
-  DWORD_PTR systemMask = 0;
-  if(!GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask) || !processMask) return;
-
-  int target = processor;
-  if(target < 0) {
-    target = 0;
-    for(uint index : range((uint)(sizeof(DWORD_PTR) * 8))) {
-      if(processMask & ((DWORD_PTR)1 << index)) target = index;
-    }
-  }
-
-  if(target < 0 || target >= (int)(sizeof(DWORD_PTR) * 8)) return;
-
-  DWORD_PTR mask = (DWORD_PTR)1 << target;
-  if(!(processMask & mask)) return;
-  SetThreadAffinityMask(GetCurrentThread(), mask);
-  SetThreadIdealProcessor(GetCurrentThread(), target);
-}
-
-auto enableNtTimerResolution() -> void {
-  if(!settings.fastLink.windowsTimerResolution || ntTimerResolutionActive) return;
-  auto ntdll = GetModuleHandleA("ntdll.dll");
-  if(!ntdll) return;
-  auto setTimerResolution = (NtSetTimerResolutionProc)GetProcAddress(ntdll, "NtSetTimerResolution");
-  if(!setTimerResolution) return;
-  if(setTimerResolution(5000, TRUE, &ntTimerResolutionCurrent) >= 0) {
-    ntTimerResolutionActive = true;
-  }
-}
-
-auto disableNtTimerResolution() -> void {
-  if(!ntTimerResolutionActive) return;
-  auto ntdll = GetModuleHandleA("ntdll.dll");
-  auto setTimerResolution = ntdll ? (NtSetTimerResolutionProc)GetProcAddress(ntdll, "NtSetTimerResolution") : nullptr;
-  if(setTimerResolution) setTimerResolution(5000, FALSE, &ntTimerResolutionCurrent);
-  ntTimerResolutionActive = false;
-}
-
-auto enableHighPerformancePowerScheme() -> void {
-  if(!settings.fastLink.windowsHighPerformancePower) return;
-  auto powrprof = LoadLibraryW(L"powrprof.dll");
-  if(!powrprof) return;
-  using PowerGetActiveSchemeProc = DWORD (WINAPI*)(HKEY, GUID**);
-  using PowerSetActiveSchemeProc = DWORD (WINAPI*)(HKEY, const GUID*);
-  auto getActiveScheme = (PowerGetActiveSchemeProc)GetProcAddress(powrprof, "PowerGetActiveScheme");
-  auto setActiveScheme = (PowerSetActiveSchemeProc)GetProcAddress(powrprof, "PowerSetActiveScheme");
-  if(setActiveScheme) {
-    if(!previousPowerScheme && getActiveScheme) getActiveScheme(nullptr, &previousPowerScheme);
-    const GUID highPerformance = {0x8c5e7fda, 0xe8bf, 0x4a96, {0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c, 0x63, 0x5c}};
-    setActiveScheme(nullptr, &highPerformance);
-  }
-  FreeLibrary(powrprof);
-}
-
-auto restorePowerScheme() -> void {
-  if(!previousPowerScheme) return;
-  auto powrprof = LoadLibraryW(L"powrprof.dll");
-  if(powrprof) {
-    using PowerSetActiveSchemeProc = DWORD (WINAPI*)(HKEY, const GUID*);
-    auto setActiveScheme = (PowerSetActiveSchemeProc)GetProcAddress(powrprof, "PowerSetActiveScheme");
-    if(setActiveScheme) setActiveScheme(nullptr, previousPowerScheme);
-    FreeLibrary(powrprof);
-  }
-  LocalFree(previousPowerScheme);
-  previousPowerScheme = nullptr;
-}
-
-auto enableWindowsLatencyMode() -> void {
-  SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-  SetProcessPriorityBoost(GetCurrentProcess(), FALSE);
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-  SetThreadPriorityBoost(GetCurrentThread(), FALSE);
-
-  if(!windowsLatencyModeActive && timeBeginPeriod(1) == TIMERR_NOERROR) {
-    windowsLatencyModeActive = true;
-  }
-  enableNtTimerResolution();
-  enableHighPerformancePowerScheme();
-  applyThreadAffinity(settings.fastLink.mainThreadAffinity);
-}
-
-auto disableWindowsLatencyMode() -> void {
-  restorePowerScheme();
-  disableNtTimerResolution();
-  if(windowsLatencyModeActive) {
-    timeEndPeriod(1);
-    windowsLatencyModeActive = false;
-  }
-}
-
-auto lowLatencyInactiveYield() -> void {
-  for(uint i : range(200)) {
-    YieldProcessor();
-    SwitchToThread();
-  }
-}
-
-LONG WINAPI fastLinkCrashHandler(EXCEPTION_POINTERS* ep) {
-  return EXCEPTION_CONTINUE_SEARCH;
-}
-}
-#endif
-
-namespace {
-auto fastLinkFrameDurationNanoseconds() -> uint64 {
-  bool interlace = SuperFamicom::cpu.interlace();
-  double frequency = SuperFamicom::system.cpuFrequency();
-  if(SuperFamicom::Region::PAL()) {
-    double clocks = interlace ? 1364.0 * 312.5 + 2.0 : 1364.0 * 312.0;
-    return (uint64)(1'000'000'000.0 * clocks / frequency + 0.5);
-  }
-
-  double clocks = interlace ? 1364.0 * 262.5 : 1364.0 * 262.0 - 2.0;
-  return (uint64)(1'000'000'000.0 * clocks / frequency + 0.5);
-}
-}
-
-auto Program::create() -> void {
-  frameTiming.initialize();
-  #if defined(PLATFORM_WINDOWS)
-  SetUnhandledExceptionFilter(fastLinkCrashHandler);
-  _set_invalid_parameter_handler(fastLinkInvalidParameterHandler);
-  std::set_terminate(fastLinkTerminateHandler);
-  signal(SIGABRT, fastLinkSignalHandler);
-  fastLinkDebug("Program::create SEH crash handler installed");
-  fastLinkCrashStep("Program::create: crash handlers installed");
-  #endif
-  fastLinkDebug(
-    "Program::create begin videoDriver=%s present=%s swap=%u audioDriver=%s audioExclusive=%d audioBlocking=%d ramTrace=%d",
-    (const char*)settings.video.driver,
-    (const char*)settings.video.presentMode,
-    settings.video.swapchainImages,
-    (const char*)settings.audio.driver,
-    settings.audio.exclusive,
-    settings.audio.blocking,
-    settings.fastLink.ramTraceServer
-  );
-  fastLinkDebug("Program::create libco co_serializable=%d", co_serializable());
-  #if defined(PLATFORM_WINDOWS)
-  enableWindowsLatencyMode();
-  fastLinkDebug("Program::create latency mode enabled");
-  #endif
-
+auto Program::create() -> bool {
   Emulator::platform = this;
-
-  fastLinkCrashStep("Program::create: presentation begin");
-  fastLinkDebug("Program::create presentation begin");
-  presentation.create();
-  presentation.setVisible();
-  presentation.viewport.setFocused();
-  fastLinkDebug("Program::create presentation ready viewport=%p", (void*)presentation.viewport.handle());
+  timing.initialize();
+  enableWindowsLatencyMode();
+  updateVideoPalette();
+  emulator->configure("Video/HDMode7", settings.video.hdMode7);
+  emulator->configure("Video/BlurEmulation", settings.video.blur);
+  if(!updateVideoDriver(mainWindow)) return false;
+  updateAudioDriver(mainWindow);
+  if(!nativeInputManager.initialize()) { nativeError("Could not initialize Raw Input."); return false; }
   if(settings.fastLink.ramTraceServer) fastLinkRAMTraceService.start();
-
-  fastLinkCrashStep("Program::create: settings/tools windows begin");
-  fastLinkDebug("Program::create settings/tools windows begin");
-  settingsWindow.create();
-  videoSettings.create();
-  audioSettings.create();
-  #if !defined(PLATFORM_WINDOWS)
-  inputSettings.create();
-  #endif
-  hotkeySettings.create();
-  pathSettings.create();
-  emulatorSettings.create();
-  driverSettings.create();
-
-  toolsWindow.create();
-  cheatFinder.create();
-  cheatDatabase.create();
-  cheatWindow.create();
-  cheatEditor.create();
-  stateWindow.create();
-  stateManager.create();
-  manifestViewer.create();
-  fastLinkDebug("Program::create settings/tools windows ready");
-  fastLinkCrashStep("Program::create: settings/tools windows ready");
-
-  if(settings.general.crashed) {
-    string crashComponent = settings.general.crashComponent;
-    if(!crashComponent) crashComponent = "Video";
-
-    MessageDialog(
-      "Driver crash detected. Recovery settings have been applied.\n"
-      "Please reconfigure drivers in the advanced settings panel if needed."
-    ).setAlignment(*presentation).information();
-
-    if(crashComponent == "Video") {
-      #if defined(PLATFORM_WINDOWS)
-      settings.video.driver = NativeVideoDriverName;
-      #else
-      settings.video.driver = "None";
-      #endif
-      if(settings.audio.driver == "None") settings.audio.driver = ruby::Audio::optimalDriver();
-      #if defined(PLATFORM_WINDOWS)
-      if(settings.input.driver == "None") settings.input.driver = NativeInputDriverName;
-      #else
-      if(settings.input.driver == "None") settings.input.driver = ruby::Input::safestDriver();
-      #endif
-    }
-    if(crashComponent == "Audio") {
-      settings.audio.driver = ruby::Audio::optimalDriver();
-    }
-    if(crashComponent == "Input") {
-      #if defined(PLATFORM_WINDOWS)
-      settings.input.driver = NativeInputDriverName;
-      #else
-      settings.input.driver = ruby::Input::safestDriver();
-      #endif
-    }
-  }
-
-  settings.general.crashed = true;
-  settings.general.crashComponent = "Video";
-  settings.save();
-  fastLinkCrashStep("Program::create: updateVideoDriver");
-  fastLinkDebug("Program::create updateVideoDriver begin");
-  updateVideoDriver(presentation);
-  fastLinkDebug("Program::create updateVideoDriver done ready=%d driver=%s", video.ready(), (const char*)video.driver());
-
-  settings.general.crashComponent = "Audio";
-  fastLinkCrashStep("Program::create: updateAudioDriver");
-  fastLinkDebug("Program::create updateAudioDriver begin");
-  updateAudioDriver(presentation);
-  fastLinkDebug("Program::create updateAudioDriver done ready=%d driver=%s", audio.ready(), (const char*)audio.driver());
-
-  settings.general.crashComponent = "Input";
-  fastLinkCrashStep("Program::create: updateInputDriver");
-  fastLinkDebug("Program::create updateInputDriver begin");
-  updateInputDriver(presentation);
-  fastLinkDebug("Program::create updateInputDriver done ready=%d driver=%s", input.ready(), (const char*)input.driver());
-
-  settings.general.crashed = false;
-  settings.general.crashComponent = "";
-  settings.save();
-  fastLinkDebug("Program::create crash guard cleared");
-  fastLinkCrashStep("Program::create: crash guard cleared");
-
   if(gameQueue) load();
-  if(startFullScreen && emulator->loaded()) {
-    toggleVideoFullScreen();
-  }
-  #if !defined(PLATFORM_WINDOWS)
-  inputManager.startWorker();
-  #endif
-  Application::onMain({&Program::main, this});
-  fastLinkDebug("Program::create complete");
-  fastLinkCrashStep("Program::create: complete");
+  if(startFullScreen) toggleVideoFullScreen();
+  return true;
 }
 
-auto Program::main() -> void {
-  const bool captureTiming = frameTiming.enabled();
-  if(captureTiming) frameTiming.beginFrame();
-  const auto timingBegin = captureTiming ? chrono::nanosecond() : 0;
-  #if defined(BUILD_DEBUG)
-  static uint64 mainTraceCounter = 0;
-  mainTraceCounter++;
-  bool traceFrame = mainTraceCounter <= 2000;
-  #else
-  constexpr uint64 mainTraceCounter = 0;
-  constexpr bool traceFrame = false;
-  #endif
-
-  updateStatus();
-
-  #if !defined(PLATFORM_WINDOWS)
-  inputManager.poll();
-  #endif
-  inputManager.pollHotkeys();
-  video.poll();
-
-  static bool previouslyModal = false;
-  bool currentlyModal = Application::modal();
-  if(currentlyModal) {
-    frameTiming.idle();
-    if(!previouslyModal) audio.clear();
-    previouslyModal = true;
-    if(traceFrame) fastLinkDebug("Program::main[%llu] modal return", (unsigned long long)mainTraceCounter);
-    resetFramePacer();
-    return;
-  }
-  previouslyModal = false;
-
-  static bool previouslyInactive = true;
-  bool currentlyInactive = inactive();
-  if(traceFrame) {
-    fastLinkDebug(
-      "Program::main[%llu] loaded=%d inactive=%d frameAdvance=%d fastForward=%d",
-      (unsigned long long)mainTraceCounter,
-      emulator && emulator->loaded(),
-      currentlyInactive,
-      presentation.frameAdvance.checked(),
-      fastForwarding
-    );
-  }
-
-  // check if emulator has transitioned from active to inactive or vice versa
-  if(previouslyInactive != currentlyInactive) {
-    previouslyInactive = currentlyInactive;
-    if(currentlyInactive) audio.clear();
-    else resetFramePacer();
-    Application::setScreenSaver(currentlyInactive || settings.general.screenSaver);
-  }
-
-  if(currentlyInactive) {
-    frameTiming.idle();
-    if(traceFrame) fastLinkDebug("Program::main[%llu] inactive return", (unsigned long long)mainTraceCounter);
-    resetFramePacer();
-    #if defined(PLATFORM_WINDOWS)
-    if(settings.fastLink.lowLatencyInactiveYield) {
-      lowLatencyInactiveYield();
-    } else
-    #endif
-    {
-      usleep(20 * 1000);
-    }
-    viewportRefresh();
-    return;
-  }
-
-  // Wait until the frame deadline before entering the core so Raw Input can
-  // continue publishing newer controller state for the core's just-in-time
-  // input polls. Pacing after emulation makes the completed frame sit idle and
-  // increases the age of the input represented by the next presented frame.
-  const auto timingPace = captureTiming ? chrono::nanosecond() : 0;
-  const auto discardedBefore = framePacer.discardedNanoseconds;
-  paceFrame();
-  const auto timingPrepare = captureTiming ? chrono::nanosecond() : 0;
-  // Retire the previous GPU upload now, before entering the core. Waiting for
-  // upload ownership from videoFrame() would add a predictable stall after the
-  // core has already sampled input.
-  #if defined(PLATFORM_WINDOWS)
-  if(emulator && emulator->loaded() && !video.prepare()) {
-    frameTiming.idle();
-    // Do not advance emulation without presenting the completed frame.  The
-    // Vulkan backend waits for ordinary GPU/swapchain pressure; reaching this
-    // path indicates a real surface/device failure.
-    resetFramePacer();
-    return;
-  }
-  #endif
-
-  if(traceFrame) fastLinkDebug("Program::main[%llu] frame begin", (unsigned long long)mainTraceCounter);
-  const auto timingRun = captureTiming ? chrono::nanosecond() : 0;
-  emulator->run();
-  const auto timingTrace = captureTiming ? chrono::nanosecond() : 0;
-  if(traceFrame) fastLinkDebug("Program::main[%llu] frame done", (unsigned long long)mainTraceCounter);
-
-  fastLinkRAMTraceService.publishFrame();
-  if(captureTiming) frameTiming.record(timingBegin, timingPace, timingPrepare,
-    timingRun, timingTrace, chrono::nanosecond(), fastLinkFrameDurationNanoseconds(),
-    framePacer.discardedNanoseconds - discardedBefore);
-  if(traceFrame) fastLinkDebug("Program::main[%llu] published RAM trace if requested", (unsigned long long)mainTraceCounter);
-
-  if(emulatorSettings.autoSaveMemory.checked()) {
-    auto currentTime = chrono::timestamp();
-    if(currentTime - autoSaveTime >= settings.emulator.autoSaveMemory.interval) {
-      autoSaveTime = currentTime;
-      emulator->save();
-    }
-  }
-
-  if(traceFrame) fastLinkDebug("Program::main[%llu] done", (unsigned long long)mainTraceCounter);
+auto Program::focused() const -> bool { return video.focused(); }
+auto Program::inactive() const -> bool {
+  return loading || modalDepth || hostSuspended || !emulator->loaded() || paused
+    || (!video.fullScreen() && IsIconic(mainWindow))
+    || (frameAdvance && frameAdvanceLock) || (!focused() && settings.input.defocus == "Pause");
 }
 
 auto Program::paceFrame() -> void {
-  if(!settings.fastLink.softwareFramePacing || fastForwarding) return resetFramePacer();
-  if((video.ready() && video.hasBlocking() && video.blocking())
-  || (audio.ready() && audio.hasBlocking() && audio.blocking())) return resetFramePacer();
+  double multiplier = fastForwarding ? settings.fastForward.limiter : speed;
+  if(!settings.fastLink.softwareFramePacing || multiplier == 0
+    || (audio.hasBlocking() && audio.blocking())) { resetFramePacer(); return; }
+  auto duration = (uint64)(fastLinkFrameDurationNanoseconds() / multiplier);
+  auto deadline = framePacer.next(chrono::nanosecond(), duration);
+  waitForFrameDeadline(deadline);
+}
 
-  uint64 frameDuration = fastLinkFrameDurationNanoseconds();
-  auto now = chrono::nanosecond();
-  const auto deadline = framePacer.next(now, frameDuration);
+auto Program::main() -> void {
+  if(inFrame || quitting) return;
+  inFrame = true;
+  struct FrameGuard { bool& flag; ~FrameGuard() { flag = false; } } guard{inFrame};
+  if(inactive()) { timing.idle(); resetFramePacer(); return; }
+  bool capture = timing.enabled();
+  auto begin = capture ? chrono::nanosecond() : 0;
+  if(capture) timing.beginFrame();
+  auto discarded = framePacer.discardedNanoseconds;
+  video.poll();
+  auto pace = capture ? chrono::nanosecond() : 0;
+  paceFrame();
+  auto prepare = capture ? chrono::nanosecond() : 0;
+  bool presentReady=video.prepare();
+  auto run = capture ? chrono::nanosecond() : 0;
+  frameFocused = focused();
+  emulator->run();
+  presentVideo();
+  auto trace = capture ? chrono::nanosecond() : 0;
+  fastLinkRAMTraceService.publishFrame();
+  if(capture)timing.frameDriverPresent=video.takePresentTiming();
+  if(capture) timing.record(begin, pace, prepare, run, trace, chrono::nanosecond(),
+    fastLinkFrameDurationNanoseconds(), framePacer.discardedNanoseconds - discarded,presentReady);
+}
 
-  while((now = chrono::nanosecond()) + 2'000'000ull < deadline) {
-    #if defined(PLATFORM_WINDOWS)
-    Sleep(1);
-    #else
-    ::std::this_thread::sleep_for(::std::chrono::milliseconds(1));
-    #endif
+auto Program::quit() -> void { quitting = true; PostQuitMessage(0); }
+auto Program::save() -> void { if(emulator->loaded()) emulator->save(); }
+auto Program::reset() -> void {
+  if(!emulator->loaded()) return;
+  emulator->reset(); audio.clear(); resetFramePacer(); showMessage("Game reset");
+}
+auto Program::power() -> void {
+  if(!emulator->loaded()) return;
+  emulator->power(); audio.clear(); resetFramePacer(); showMessage("Power cycle");
+}
+auto Program::unload() -> void {
+  if(!emulator->loaded()) return;
+  nativeCloseTools();
+  if(settings.emulator.autoSaveStateOnUnload) saveUndoState();
+  emulator->unload();
+  screenshot = {};
+  superFamicom = {}; gameBoy = {}; bsMemory = {}; sufamiTurboA = {}; sufamiTurboB = {};
+  fastLinkRAMTraceService.clearSnapshot();
+  audio.clear(); video.clear(); resetFramePacer();
+  nativeTitle(); nativeMenus();
+  showMessage("Game unloaded");
+}
+
+auto Program::load() -> void {
+  if(loading || inFrame) return;
+  if(!gameQueue) {
+    auto location = nativeFile(false, "Load SNES ROM", settings.path.games ? settings.path.games : settings.path.recent.superFamicom);
+    if(!location) return;
+    gameQueue.append({"Auto;", location});
   }
-  while((now = chrono::nanosecond()) < deadline) {
-    #if defined(PLATFORM_WINDOWS)
-    YieldProcessor();
-    #elif defined(__SSE2__)
-    __builtin_ia32_pause();
-    #else
-    ::std::this_thread::yield();
-    #endif
+  loading = true;
+  struct LoadGuard { bool& flag; ~LoadGuard() { flag = false; } } guard{loading};
+  auto requested = gameQueue;
+  unload(); gameQueue = requested;
+  superFamicom = {}; gameBoy = {}; bsMemory = {}; sufamiTurboA = {}; sufamiTurboB = {};
+  if(!emulator->load()) { gameQueue = {}; nativeError("Game loading failed. Check the ROM and required firmware."); return; }
+  gameQueue = {};
+  if(settings.emulator.warnOnUnverifiedGames && !verified()
+    && !nativeConfirm("This ROM was not found in the game database. Load it?", "Unverified ROM")) { unload(); return; }
+  emulator->power();
+  if(settings.emulator.autoLoadStateOnLoad && hasState("Quick/Undo")) loadState("Quick/Undo");
+  updateCheats();
+  paused = frameAdvance = frameAdvanceLock = false;
+  speed = 1.0; updateAudioFrequency();
+  resetFramePacer();
+  nativeTitle(); nativeMenus();
+  string entry = {superFamicom.option, ";", superFamicom.location};
+  if(gameBoy) entry.append("|", gameBoy.option, ";", gameBoy.location);
+  if(bsMemory) entry.append("|", bsMemory.option, ";", bsMemory.location);
+  if(sufamiTurboA) entry.append("|", sufamiTurboA.option, ";", sufamiTurboA.location);
+  if(sufamiTurboB) entry.append("|", sufamiTurboB.option, ";", sufamiTurboB.location);
+  vector<string> recent; recent.append(entry);
+  for(uint i = 1; i <= 9 && recent.size() < 9; i++) {
+    auto old = settings[string{"Game/Recent/", i}].text();
+    if(old && old != entry) recent.append(old);
+  }
+  for(uint i = 0; i < 9; i++) settings(string{"Game/Recent/", i + 1}).setValue(i < recent.size() ? recent[i] : string{});
+  settings.save(); nativeMenus();
+  showMessage(verified() ? "Verified game loaded" : "Game loaded");
+}
+
+auto Program::load(uint id, string name, string type, vector<string> options) -> Emulator::Platform::Load {
+  string location, option = "Auto";
+  if(gameQueue) {
+    auto entry = gameQueue.takeLeft().split(";", 1L);
+    option = entry(0, "Auto"); location = entry(1);
+  } else location = nativeFile(false, {"Load ", name});
+  if(!location) return {};
+  bool loaded = false;
+  if(id == 1) { superFamicom.option = option; loaded = loadSuperFamicom(location); settings.path.recent.superFamicom = Location::dir(location); }
+  if(id == 2) { gameBoy.option = option; loaded = loadGameBoy(location); settings.path.recent.gameBoy = Location::dir(location); }
+  if(id == 3) { bsMemory.option = option; loaded = loadBSMemory(location); settings.path.recent.bsMemory = Location::dir(location); }
+  if(id == 4) { sufamiTurboA.option = option; loaded = loadSufamiTurboA(location); settings.path.recent.sufamiTurboA = Location::dir(location); }
+  if(id == 5) { sufamiTurboB.option = option; loaded = loadSufamiTurboB(location); settings.path.recent.sufamiTurboB = Location::dir(location); }
+  return loaded ? Emulator::Platform::Load{id, option} : Emulator::Platform::Load{};
+}
+
+auto Program::videoFrame(const uint16* data, uint pitch, uint width, uint height, uint scale) -> void {
+  screenshot = {data, pitch, width, height, scale};
+  if(frameAdvance) frameAdvanceLock = true;
+}
+
+auto Program::presentVideo() -> void {
+  if(!screenshot.data)return;
+  auto data=screenshot.data;
+  uint pitch=screenshot.pitch,width=screenshot.width,height=screenshot.height;
+  bool capture = timing.enabled();
+  auto begin = capture ? chrono::nanosecond() : 0;
+  if(!settings.video.overscan) { uint rows = 8 * (height / 240); data += rows * (pitch / 2); height -= rows * 2; }
+  auto size = video.size();
+  // Windowed output follows the native pixel ratio, including while resizing.
+  uint outWidth = 0, outHeight = 0;
+  if(video.fullScreen() && settings.video.output != "Stretch" && size.width && size.height) {
+    double baseWidth = settings.video.aspectCorrection ? 256.0 * 8.0 / 7.0 : 256.0;
+    double baseHeight = settings.video.overscan ? 240.0 : 224.0;
+    double factor = min(size.width / baseWidth, size.height / baseHeight);
+    if(settings.video.output == "Center" && factor >= 1) factor = floor(factor);
+    outWidth = (uint)(baseWidth * factor); outHeight = (uint)(baseHeight * factor);
+  }
+  if(auto target = video.acquire(width, height); target) {
+    Filter::None::render(paused && settings.video.dimming ? paletteDimmed : palette,
+      target.data, target.pitch, data, pitch, width, height);
+    auto output = capture ? chrono::nanosecond() : 0;
+    video.output(outWidth, outHeight);
+    if(capture) timing.frameOutput += chrono::nanosecond() - output;
+  }
+  if(capture) timing.frameVideo += chrono::nanosecond() - begin;
+  static uint count = 0; static uint64 previous = 0;
+  count++;
+  auto now = chrono::second();
+  if(now != previous) {
+    previous = now; statusFrameRate = {count, " FPS"}; count = 0;
+    if(chrono::millisecond() - statusTime > 2000) nativeStatus(statusFrameRate);
   }
 }
 
-auto Program::resetFramePacer() -> void {
-  framePacer.reset();
+auto Program::audioFrame(const double* samples, uint) -> void {
+  bool silent = settings.audio.mute || (settings.audio.muteUnfocused && !frameFocused) || (fastForwarding && settings.fastForward.mute);
+  if(silent) { const double silence[2]{}; audio.output(silence); }
+  else audio.output(samples);
+}
+auto Program::inputPoll(uint port, uint device, uint input) -> int16 {
+  if(device != 1 || (!frameFocused && settings.input.defocus != "Allow")) return 0;
+  return nativeInputManager.pollGamepad(port, input);
+}
+auto Program::showMessage(string text) -> void { statusTime = chrono::millisecond(); statusMessage = text; nativeStatus(text); }
+auto Program::refresh() -> bool {
+  if(inFrame) return false;
+  // Vulkan's Win32 WSI may dispatch window messages while presenting. A
+  // paused redraw needs the same protection against reentry as a core frame.
+  inFrame=true;
+  struct RefreshGuard { bool& flag; ~RefreshGuard() { flag=false; } } guard{inFrame};
+  video.poll();
+  if(!screenshot.data)return true;
+  if(!video.ready())return false;
+  presentVideo();return true;
 }
 
-auto Program::quit() -> void {
-  frameTiming.save();
-  presentation.saveWindowGeometry();
-
-  //make closing the program feel more responsive
-  presentation.setVisible(false);
-  Application::processEvents();
-
-  //in case the emulator was closed prior to initialization completing:
-  settings.general.crashed = false;
-  settings.general.crashComponent = "";
-
-  fastLinkRAMTraceService.stop();
-  unload();
-  #if defined(PLATFORM_WINDOWS)
-  nativeInputManager.terminate();
-  #else
-  inputManager.stopWorker();
-  #endif
-  settings.save();
-  video.reset();
-  audio.reset();
-  input.reset();
-  #if defined(PLATFORM_WINDOWS)
-  disableWindowsLatencyMode();
-  #endif
-
-  #if defined(PLATFORM_WINDOWS)
-  //in rare cases, when Application::exit() calls exit(0), a crash will occur.
-  //this seems to be due to the internal state of certain ruby drivers.
-  auto processID = GetCurrentProcessId();
-  auto handle = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, true, processID);
-  if(handle) {
-    TerminateProcess(handle, 0);
-    CloseHandle(handle);
+auto Program::updateVideoDriver(HWND) -> bool {
+  video.setContext((uintptr_t)videoWindow);
+  video.setPresentMode(settings.video.presentMode);
+  video.setSwapchainImages(settings.video.swapchainImages);
+  video.setMonitor(settings.video.monitor);
+  settings.video.flush=false;
+  video.setFlush(false);
+  video.setShader(settings.video.shader == "Blur" ? "Blur" : "None");
+  video.create(NativeVideoDriverName);
+  video.captureTiming(timing.enabled());
+  if(!video.ready()) { nativeError("Could not initialize the native Vulkan backend."); return false; }
+  return true;
+}
+auto Program::updateAudioDriver(HWND) -> bool {
+  audio.reset(); audio.create(settings.audio.driver); audio.setContext((uintptr_t)mainWindow);
+  if(!audio.ready()) { nativeError("Could not initialize audio output."); return false; }
+  if(audio.hasDevice(settings.audio.device)) audio.setDevice(settings.audio.device);
+  else settings.audio.device = audio.device();
+  audio.setExclusive(settings.audio.exclusive);
+  // Device backpressure belongs to the audio worker, never to SNES execution.
+  settings.audio.blocking=false;
+  audio.setBlocking(false);
+  audio.setDynamic(settings.audio.dynamic);
+  if(audio.hasFrequency(settings.audio.frequency)) audio.setFrequency(settings.audio.frequency);
+  else settings.audio.frequency = audio.frequency();
+  if(audio.hasLatency(settings.audio.latency)) audio.setLatency(settings.audio.latency);
+  else settings.audio.latency = audio.latency();
+  updateAudioFrequency(); updateAudioEffects(); return true;
+}
+auto Program::updateAudioFrequency() -> void {
+  double multiplier = fastForwarding ? max(1u, settings.fastForward.limiter) : speed;
+  Emulator::audio.setFrequency((settings.audio.frequency + settings.audio.skew) / multiplier);
+}
+auto Program::updateAudioEffects() -> void {
+  Emulator::audio.setVolume(settings.audio.volume * 0.01);
+  Emulator::audio.setBalance(max(-1.0, min(1.0, ((int)settings.audio.balance - 50) / 50.0)));
+}
+auto Program::toggleVideoFullScreen() -> void {
+  video.setFullScreen(!video.fullScreen()); nativeMenus();
+  refresh();
+}
+auto Program::updateCheats() -> void {
+  vector<string> codes;
+  if(settings.emulator.cheats.enable) {
+    auto document = BML::unserialize(string::read(cheatPath()));
+    for(auto entry : document.find("cheat")) if(entry["enable"]) {
+      for(auto code : entry["code"].text().split("+")) {
+        code.strip().downcase();
+        if(gameBoy ? decodeGB(code) : decodeSNES(code)) codes.append(code);
+      }
+    }
   }
-  #endif
-
-  Application::exit();
+  emulator->cheats(codes);
 }
+
+auto Program::shutdown() -> void { disableWindowsLatencyMode(); }

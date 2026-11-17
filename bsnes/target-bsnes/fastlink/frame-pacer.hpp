@@ -14,12 +14,8 @@ struct FastLinkFramePacer {
       deadline = now + duration;
       return now;
     }
-    // Recover ordinary scheduling stalls against the original timeline.
-    // A debugger stop/suspend must not trigger seconds of catch-up gameplay.
-    if(now > deadline && now - deadline > 250'000'000ull) {
-      discardedNanoseconds += now - deadline;
-      deadline = now;
-    }
+    // Preserve the original timeline across host stalls of any duration.
+    // Only explicit pause/resume/reset events may establish a new timeline.
     auto target = deadline;
     deadline += duration;
     return target;
